@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <cwchar>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -26,6 +28,7 @@ namespace
 		bool executeSucceeds = true;
 		unsigned executions = 0;
 		std::size_t last = QuickAccess::kButtonCount;
+		HWND focusOnExecute = nullptr;
 		HWND destroyOnRefresh = nullptr;
 		unsigned searches = 0;
 		std::wstring query;
@@ -56,6 +59,7 @@ namespace
 			auto& host = *static_cast<FakeHost*>(context);
 			++host.executions;
 			host.last = button;
+			if (IsWindow(host.focusOnExecute)) SetFocus(host.focusOnExecute);
 			return host.executeSucceeds;
 		}
 
@@ -141,6 +145,55 @@ namespace
 	HWND Toolbar(HWND window)
 	{
 		return FindWindowExW(CommandPage(window), nullptr, TOOLBARCLASSNAMEW, nullptr);
+	}
+
+	bool QueuedKey(HWND target, UINT key, UINT message = WM_KEYDOWN, LPARAM flags = 0)
+	{
+		PostMessageW(target, message, key, flags);
+		MSG queued{};
+		if (!PeekMessageW(&queued, target, WM_KEYFIRST, WM_KEYLAST, PM_REMOVE)) return false;
+		const bool handled = queued.message == WM_NULL;
+		if (!handled) { TranslateMessage(&queued); DispatchMessageW(&queued); }
+		return handled;
+	}
+
+	void CheckCommandIcons(HWND toolbar)
+	{
+		const auto images = reinterpret_cast<HIMAGELIST>(SendMessageW(toolbar, TB_GETIMAGELIST, 0, 0));
+		int width = 0, height = 0;
+		ImageList_GetIconSize(images, &width, &height);
+		HDC screen = GetDC(toolbar), dc = CreateCompatibleDC(screen);
+		HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
+		ReleaseDC(toolbar, screen);
+		Expect(dc != nullptr && bitmap != nullptr, L"command icon measurement surface created");
+		if (dc != nullptr && bitmap != nullptr)
+		{
+			const auto old = SelectObject(dc, bitmap);
+			const COLORREF background = GetSysColor(COLOR_HOTLIGHT) == RGB(255, 255, 255) ? RGB(0, 0, 0) : RGB(255, 255, 255);
+			std::vector<std::vector<bool>> silhouettes;
+			for (int i = 0; i < static_cast<int>(QuickAccess::kButtonCount); ++i)
+			{
+				SetDCBrushColor(dc, background);
+				RECT rect{0, 0, width, height};
+				FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+				ImageList_Draw(images, i, dc, 0, 0, ILD_NORMAL);
+				std::vector<bool> pixels;
+				int ink = 0, lowerInk = 0;
+				for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x)
+				{
+					const bool drawn = GetPixel(dc, x, y) != background;
+					pixels.push_back(drawn);
+					if (drawn) { ++ink; if (y >= height * 2 / 3) ++lowerInk; }
+				}
+				Expect(ink >= width * 2, L"each command has a substantial, visible icon silhouette");
+				if (i == 6) Expect(lowerInk > width / 2, L"Refresh draws a complete circular pair of arrows, including the lower sweep");
+				for (const auto& previous : silhouettes) Expect(pixels != previous, L"different commands have distinct icon silhouettes");
+				silhouettes.push_back(std::move(pixels));
+			}
+			SelectObject(dc, old);
+		}
+		if (bitmap != nullptr) DeleteObject(bitmap);
+		if (dc != nullptr) DeleteDC(dc);
 	}
 
 	std::wstring AccessibleName(HWND control)
@@ -254,6 +307,94 @@ namespace
 		MSG message{};
 		PeekMessageW(&message, tabs, WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE);
 		Expect(message.message == WM_NULL && GetFocus() == GetDlgItem(window, QuickAccess::kMinimise), L"the real UI-thread message hook applies keyboard traversal before Explorer translation");
+		QueuedKey(tabs, VK_TAB, WM_KEYUP);
+
+		// Exercise queue retrieval and actual native controls, not only direct calls into HandleKey.
+		SetFocus(GetDlgItem(window, QuickAccess::kMinimise));
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && QuickAccess::GetDisplayMode(window) == DisplayMode::Minimized,
+			L"queued Enter activates Minimise in an ordinary frame without IsDialogMessage");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		Expect(QueuedKey(tabs, VK_RETURN) && QuickAccess::IsPopupOpen(window) && GetFocus() == toolbar,
+			L"queued Enter opens minimized commands without also invoking a command");
+		QueuedKey(toolbar, VK_RETURN, WM_KEYUP);
+		QuickAccess::DismissPopup(window);
+		SetFocus(GetDlgItem(window, QuickAccess::kMaximise));
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && QuickAccess::GetDisplayMode(window) == DisplayMode::Expanded,
+			L"queued Enter activates Maximise and restores a visible tab focus target");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		SetFocus(tabs);
+		Expect(QueuedKey(tabs, VK_RIGHT) && QuickAccess::SelectedTab(window) == Tab::View,
+			L"queued tab arrows select pages before the host can translate them");
+		QueuedKey(tabs, VK_RIGHT, WM_KEYUP);
+		QuickAccess::SelectTab(window, Tab::Home);
+		Expect(QueuedKey(tabs, VK_DOWN) && GetFocus() == toolbar, L"Down Arrow enters the selected tab's commands");
+		QueuedKey(toolbar, VK_DOWN, WM_KEYUP);
+		QuickAccess::HandleKey(window, VK_END);
+		NMTBHOTITEM hover{};
+		hover.hdr = {toolbar, 0, TBN_HOTITEMCHANGE};
+		hover.dwFlags = HICF_MOUSE | HICF_ENTERING;
+		hover.idNew = QuickAccess::kFirstButton;
+		Expect(SendMessageW(CommandPage(window), WM_NOTIFY, 0, reinterpret_cast<LPARAM>(&hover)) != 0,
+			L"pointer hover cannot change the keyboard command target");
+		hover.dwFlags = HICF_LEAVING;
+		Expect(SendMessageW(CommandPage(window), WM_NOTIFY, 0, reinterpret_cast<LPARAM>(&hover)) != 0 &&
+			SendMessageW(toolbar, TB_GETHOTITEM, 0, 0) == 8, L"pointer exit cannot erase the keyboard focus target");
+		const unsigned beforeRepeat = host.executions;
+		host.focusOnExecute = content;
+		Expect(QueuedKey(toolbar, VK_RETURN) && host.executions == beforeRepeat + 1 && host.last == 8 && GetFocus() == content,
+			L"queued Enter executes the focused command once and permits Explorer to take focus");
+		Expect(QueuedKey(content, VK_RETURN, WM_KEYDOWN, 1L << 30) && host.executions == beforeRepeat + 1,
+			L"holding Enter after command dispatch does not repeat the action or leak to Explorer");
+		QueuedKey(content, VK_RETURN, WM_KEYUP);
+		host.focusOnExecute = nullptr;
+		SetFocus(tabs);
+		Expect(!QuickAccess::HandleKey(window, VK_F6, false, true) && GetFocus() == tabs,
+			L"Ctrl+F6 remains an Explorer accelerator, not ribbon traversal");
+		Expect(!QuickAccess::HandleKey(window, 'R', false, true, true), L"AltGr+R is not intercepted as Alt+R");
+		Expect((SendMessageW(toolbar, WM_GETDLGCODE, VK_TAB, 0) & DLGC_WANTTAB) != 0 &&
+			(SendMessageW(GetDlgItem(window, QuickAccess::kHide), WM_GETDLGCODE, VK_RETURN, 0) & DLGC_WANTMESSAGE) != 0,
+			L"native controls request navigation keys from dialog-style host translation");
+		QuickAccess::SelectTab(window, Tab::Search);
+		SetFocus(tabs);
+		QuickAccess::HandleKey(window, VK_DOWN);
+		Expect(QueuedKey(toolbar, VK_TAB) && GetFocus() == GetDlgItem(CommandPage(window), QuickAccess::kSearchText),
+			L"Tab reaches the search edit field through the real keyboard hook");
+		QueuedKey(GetFocus(), VK_TAB, WM_KEYUP);
+		RECT searchRect = RelativeRect(GetFocus(), CommandPage(window)), searchViewport{};
+		GetClientRect(CommandPage(window), &searchViewport);
+		Expect(searchRect.left >= 0 && searchRect.right <= searchViewport.right, L"focused search text scrolls fully into the narrow command page");
+		SetWindowTextW(GetFocus(), L"keyboard regression");
+		const unsigned searches = host.searches;
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && host.searches == searches + 1, L"queued Enter in the search field submits exactly once before host translation");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		Expect(QueuedKey(GetFocus(), VK_TAB) && GetFocus() == GetDlgItem(CommandPage(window), QuickAccess::kSearch),
+			L"Tab reaches Start Search");
+		QueuedKey(GetFocus(), VK_TAB, WM_KEYUP);
+		searchRect = RelativeRect(GetFocus(), CommandPage(window));
+		Expect(searchRect.left >= 0 && searchRect.right <= searchViewport.right, L"focused Start Search scrolls fully into view");
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && host.searches == searches + 2, L"queued Enter activates Start Search without a dialog manager");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		SetFocus(GetDlgItem(row, QuickAccess::kFirstNavigation));
+		const unsigned navigations = host.navigations;
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && host.navigations == navigations + 1,
+			L"queued Enter activates a native navigation button");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		QuickAccess::SelectTab(window, Tab::Home);
+		SetFocus(tabs);
+		QuickAccess::HandleKey(window, VK_DOWN);
+		host.states[8].enabled = false;
+		QuickAccess::HandleKey(window, VK_HOME);
+		host.states[0].enabled = false;
+		QuickAccess::Refresh(window);
+		Expect(GetFocus() == toolbar && SendMessageW(toolbar, TB_GETHOTITEM, 0, 0) == 1,
+			L"availability refresh moves keyboard focus away from a newly disabled command");
+		host.states[0].enabled = host.states[8].enabled = true;
+		QuickAccess::Refresh(window);
+		SetFocus(GetDlgItem(window, QuickAccess::kHide));
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && QuickAccess::GetDisplayMode(window) == DisplayMode::Hidden &&
+			(GetFocus() == address || IsChild(address, GetFocus())), L"queued Enter on Hide returns focus to the persistent address field");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		QuickAccess::SetDisplayMode(window, DisplayMode::Expanded);
 		EnableWindow(owner, FALSE);
 		Expect(!QuickAccess::HandleKey(window, VK_F6), L"ribbon shortcuts do not move focus behind a modal Explorer dialog");
 		EnableWindow(owner, TRUE);
@@ -617,6 +758,7 @@ int wmain()
 	ImageList_GetIconSize(images, &width, &height);
 	const int expectedIcon = MulDiv(32, static_cast<int>(GetDpiForWindow(window)), 96);
 	Expect(width == expectedIcon && height == expectedIcon, L"icons are 32 logical pixels at the window DPI");
+	CheckCommandIcons(toolbar);
 	RECT rect{};
 	SendMessageW(toolbar, TB_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&rect));
 	Expect(rect.bottom - rect.top >= MulDiv(64, static_cast<int>(GetDpiForWindow(window)), 96), L"large buttons have space for icon and label");
@@ -671,10 +813,12 @@ int wmain()
 	Expect(QuickAccess::Search(searching) && !IsWindow(searching), L"ribbon destruction during search is safe");
 	CheckNavigation(owner);
 	HWND keyboard = QuickAccess::Create(owner, instance, callbacks);
+	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;
 	Expect(QuickAccess::HandleKey(keyboard, VK_F1, false, true) && !IsWindow(keyboard), L"Ctrl+F1 remains safe if host refresh destroys the ribbon");
 	keyboard = QuickAccess::Create(owner, instance, callbacks);
 	QuickAccess::SetDisplayMode(keyboard, QuickAccess::DisplayMode::Hidden);
+	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;
 	Expect(QuickAccess::HandleKey(keyboard, 'R', false, false, true) && !IsWindow(keyboard), L"Alt+R remains safe if restore refresh destroys the ribbon");
 	DestroyWindow(owner);

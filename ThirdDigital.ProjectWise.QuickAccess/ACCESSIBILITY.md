@@ -1,0 +1,52 @@
+# Quick Access keyboard and icon review
+
+Reviewed the first prototype, commit `0a94251e4ebb156b2cc91fac144ebbd7f625694c`, against the reported Explorer keyboard failure and screenshot. This review covers the companion Quick Access module. It does not establish conformance of ProjectWise Explorer, its SDK controls or Themes.
+
+## Findings and changes
+
+| Finding in the prototype | Impact | Change |
+| --- | --- | --- |
+| Only toolbar commands and the query edit had explicit Enter handling. Mode, navigation and Start Search buttons depended on a dialog manager in a normal MFC frame. | Enter could leave a visible, focused action inoperable; a synthetic `BM_CLICK` did not exercise the missing key translation. | Handle Enter before host translation and at the native control boundary. Keep native Space behaviour for ordinary buttons. |
+| The floating window used `WS_EX_NOACTIVATE` and always returned `MA_NOACTIVATE`. | Interactive edits/buttons lived in a window configured to avoid activation. This is a focus-integration risk in the real host. | Allow normal activation; refresh the SDK selection context before mouse activation. Mark nested control containers with `WS_EX_CONTROLPARENT`. |
+| The focus outline and command activation relied on the toolbar's hot item, which also changes with pointer hover/exit. | Moving the pointer could erase the focus indication or change which command Enter executed. | Keep an explicit keyboard command target, preserve it on hover/exit, invalidate on focus changes and announce command focus through MSAA. |
+| Only command buttons scrolled into view. Search edit and Start Search could be outside the clipped page. | A keyboard user could focus a completely hidden control (2.4.11). | Reveal search controls when focus moves to them. |
+| F6 handling ignored Ctrl/Alt; Alt+R also matched Ctrl+Alt+R. | Explorer's Ctrl+F6 and AltGr combinations could be intercepted. | Match shortcut modifiers precisely and leave native editing/address keys alone. |
+| Activation keydowns were handled independently, including repeats after dispatch changed focus. | Holding Enter/Space could repeat an action or leak the held key to newly focused content. | Consume repeated handled activation keys and their release in the UI-thread message hook. |
+| Refresh used a short GDI arc; Check Out/In had similar small padlocks; Details/Manage Views used identical geometry. | Incomplete or ambiguous symbols at normal size. | Use complete Bezier refresh arrows, opposite document arrows, an open lock for Free and distinct configuration/layout silhouettes. Rounded geometric pens scale with DPI. Retain all text labels. |
+| Checked state depended on a subtle tinted background. | The selected state could be difficult to distinguish. | Add a contrasting underline while preserving native checked state. |
+| CI covered Themes but did not build or run Quick Access. | The prototype's existing checks did not protect its separate solution. | Add an independent Windows x86 build/run job with no proprietary SDK dependency. |
+
+Disabled controls are exempt from the contrast requirements in 1.4.3/1.4.11. The new icons nevertheless use a minimum 3:1 outline contrast for readability. Enabled text uses 4.5:1, and symbols, focus outlines and selected-state markers use 3:1. Contrast helpers and rendered focus pixels are checked; these thresholds alone are not a complete accessibility assessment.
+
+## Automated regression coverage
+
+The native check executable exercises queued `WM_KEYDOWN`/`WM_KEYUP` messages through the real UI-thread hook as well as native control dispatch. Checks include tab selection, Enter on mode/navigation/search controls, focus return, holding Enter across a host focus change, modifier preservation, hover/exit isolation, newly disabled commands, narrow-window search visibility, distinct rendered icon silhouettes and a complete Refresh lower sweep. Existing layout, selection, command gating, popup and shutdown checks remain.
+
+The CI job compiles `QuickAccess.cpp` into a fake-host executable. It does not compile the proprietary SDK adapter (`Module.cpp`) or validate real Explorer integration.
+
+## Manual Explorer acceptance matrix
+
+Run on a disposable datasource with the exact Windows, Explorer and SDK versions recorded. Repeat docked and floating, with Themes disabled, Campbell/dark, light and Windows contrast themes, at 100% and 200% scaling and after moving between monitors.
+
+| Sequence | Expected result | Relevant criteria |
+| --- | --- | --- |
+| From the document list: Alt+R, arrows, Home/End, Down, arrows, Enter/Space | Visible tab and command focus; correct standard SDK action opens once; selection context is retained. Hold the activation key and verify there is no repeat. | 2.1.1, 2.4.3, 2.4.7, 4.1.2 |
+| Tab/Shift+Tab through tabs, mode buttons, commands, search and navigation | Only visible, enabled controls are reached. Search edit and Start Search remain visible in a narrow window. | 2.1.1, 2.4.3, 2.4.11 |
+| Enter/Space on Maximise, Minimise, Hide, Back, Forward, Up and Start Search | Actions work once without a mouse; disabling/hiding a focused control leaves visible focus. | 2.1.1, 2.4.7 |
+| F6/Shift+F6, Escape, hide/restore, minimized commands | Focus can leave and return; popup dismissal returns to tabs; Hide retains usable navigation. | 2.1.2, 2.4.3, 2.4.7 |
+| Shift+F10/Menu key; Dock at top/Float | Menu appears beside the focused control and both docking directions work without dragging. | 2.1.1, 2.5.7 |
+| Move the pointer across and away from commands while using arrows | Focus indication and Enter target stay on the keyboard-selected command until a deliberate click. | 2.4.7, 3.2.1 |
+| Search text editing, address Enter, address dropdown arrows/Escape, Ctrl+F6, AltGr | Native behaviour remains usable. No duplicate search or navigation. | 2.1.1, 2.1.2 |
+| Change selection and open a modal Explorer dialog | Availability follows selection; ribbon shortcuts/actions cannot operate behind the modal dialog. | 2.4.3, 3.2.1 |
+| Narrator and NVDA | Hear tab names/selection, command names/roles/disabled/checked state, command focus changes, query/location names and button names. Check the native SDK address control separately. | 1.3.1, 2.5.3, 4.1.2 |
+| Inspect enabled/disabled, selected, hover and focused controls across themes/scaling | Recognizable icons, readable labels, no clipping, visible focus and selected state. | 1.4.1, 1.4.3, 1.4.11, 2.4.7, 2.4.11, 2.5.8 |
+
+Record observed pass/fail and evidence for each configuration. This matrix is a focused acceptance pass, not a complete WCAG 2.2 AA audit or certification.
+
+## References
+
+- [W3C WCAG2ICT: applying WCAG 2.2 to non-web documents and software](https://www.w3.org/TR/wcag2ict-22/).
+- [W3C: Non-text Contrast](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast.html), including the inactive-control exception.
+- [W3C: Focus Not Obscured (Minimum)](https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-minimum.html).
+- [Microsoft: GetMsgProc](https://learn.microsoft.com/en-us/windows/win32/winmsg/getmsgproc), including removal versus peeking.
+- [Microsoft: TBN_HOTITEMCHANGE](https://learn.microsoft.com/en-us/windows/win32/controls/tbn-hotitemchange), including prevention of hot-item changes.

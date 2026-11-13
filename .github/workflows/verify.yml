@@ -38,3 +38,22 @@ jobs:
           $msbuild = & $vswhere -version '[17.0,18.0)' -requires Microsoft.Component.MSBuild -find 'MSBuild/**/Bin/MSBuild.exe' | Select-Object -First 1
           & $msbuild AtkinsRealis.ProjectWise.Themes.sln -t:AtkinsRealis_ProjectWise_Themes_Harness -p:Configuration=Release -p:Platform=x86 -v:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+  quickaccess-checks:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build Quick Access checks without the proprietary SDK
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $msbuild = & $vswhere -version '[17.0,18.0)' -requires Microsoft.Component.MSBuild -find 'MSBuild/**/Bin/MSBuild.exe' | Select-Object -First 1
+          & $msbuild ./ThirdDigital.ProjectWise.QuickAccess/Checks/AtkinsRealis.ProjectWise.QuickAccess.Checks.vcxproj -t:Build -p:Configuration=Release -p:Platform=Win32 -v:minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run native keyboard, accessibility, layout and icon checks
+        shell: pwsh
+        run: |
+          & ./ThirdDigital.ProjectWise.QuickAccess/Checks/out/Win32/Release/bin/AtkinsRealis.ProjectWise.QuickAccess.Checks.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
