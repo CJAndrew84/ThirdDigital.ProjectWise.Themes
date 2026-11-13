@@ -157,11 +157,21 @@ namespace
 		return handled;
 	}
 
-	void CheckCommandIcons(HWND toolbar)
+	void PaintCommand(HWND window, HWND toolbar, HDC dc, UINT command, RECT rect)
 	{
-		const auto images = reinterpret_cast<HIMAGELIST>(SendMessageW(toolbar, TB_GETIMAGELIST, 0, 0));
-		int width = 0, height = 0;
-		ImageList_GetIconSize(images, &width, &height);
+		NMCUSTOMDRAW draw{};
+		draw.hdr = {toolbar, 0, NM_CUSTOMDRAW};
+		draw.dwDrawStage = CDDS_ITEMPREPAINT;
+		draw.hdc = dc;
+		draw.rc = rect;
+		draw.dwItemSpec = command;
+		SendMessageW(window, WM_NOTIFY, 0, reinterpret_cast<LPARAM>(&draw));
+	}
+
+	void CheckCommandIcons(HWND window, HWND toolbar)
+	{
+		const int dpi = static_cast<int>(GetDpiForWindow(window));
+		const int width = MulDiv(112, dpi, 96), height = MulDiv(64, dpi, 96), icon = MulDiv(32, dpi, 96);
 		HDC screen = GetDC(toolbar), dc = CreateCompatibleDC(screen);
 		HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
 		ReleaseDC(toolbar, screen);
@@ -169,24 +179,25 @@ namespace
 		if (dc != nullptr && bitmap != nullptr)
 		{
 			const auto old = SelectObject(dc, bitmap);
-			const COLORREF background = GetSysColor(COLOR_HOTLIGHT) == RGB(255, 255, 255) ? RGB(0, 0, 0) : RGB(255, 255, 255);
+			const COLORREF background = GetSysColor(COLOR_WINDOW);
 			std::vector<std::vector<bool>> silhouettes;
 			for (int i = 0; i < static_cast<int>(QuickAccess::kButtonCount); ++i)
 			{
 				SetDCBrushColor(dc, background);
 				RECT rect{0, 0, width, height};
 				FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-				ImageList_Draw(images, i, dc, 0, 0, ILD_NORMAL);
+				PaintCommand(window, toolbar, dc, QuickAccess::kFirstButton + i, rect);
 				std::vector<bool> pixels;
 				int ink = 0, lowerInk = 0;
-				for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x)
+				for (int y = 0; y < icon; ++y) for (int x = 0; x < icon; ++x)
 				{
-					const bool drawn = GetPixel(dc, x, y) != background;
+					const COLORREF pixel = GetPixel(dc, (width - icon) / 2 + x, MulDiv(6, dpi, 96) + y);
+					const bool drawn = pixel != CLR_INVALID && pixel != background;
 					pixels.push_back(drawn);
-					if (drawn) { ++ink; if (y >= height * 2 / 3) ++lowerInk; }
+					if (drawn) { ++ink; if (y >= icon * 2 / 3) ++lowerInk; }
 				}
-				Expect(ink >= width * 2, L"each command has a substantial, visible icon silhouette");
-				if (i == 6) Expect(lowerInk > width / 2, L"Refresh draws a complete circular pair of arrows, including the lower sweep");
+				Expect(ink >= icon * 2, L"each custom-painted command has a substantial, visible icon silhouette");
+				if (i == 6) Expect(lowerInk > icon / 2, L"Refresh draws a complete circular pair of arrows, including the lower sweep");
 				for (const auto& previous : silhouettes) Expect(pixels != previous, L"different commands have distinct icon silhouettes");
 				silhouettes.push_back(std::move(pixels));
 			}
@@ -194,6 +205,62 @@ namespace
 		}
 		if (bitmap != nullptr) DeleteObject(bitmap);
 		if (dc != nullptr) DeleteDC(dc);
+	}
+
+	bool SaveCommandPreview(HWND window, HWND toolbar, const wchar_t* path)
+	{
+		const int dpi = static_cast<int>(GetDpiForWindow(window));
+		const int cellWidth = MulDiv(112, dpi, 96), cellHeight = MulDiv(64, dpi, 96), header = MulDiv(32, dpi, 96);
+		const int width = cellWidth * 6, sectionHeight = header + cellHeight * 4, height = sectionHeight * 2;
+		BITMAPINFO info{};
+		info.bmiHeader = {sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB};
+		void* pixels = nullptr;
+		HBITMAP bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+		HDC dc = CreateCompatibleDC(nullptr);
+		if (dc == nullptr || bitmap == nullptr)
+		{
+			if (dc != nullptr) DeleteDC(dc);
+			if (bitmap != nullptr) DeleteObject(bitmap);
+			return false;
+		}
+		const auto old = SelectObject(dc, bitmap);
+		RECT page{0, 0, width, height};
+		SetDCBrushColor(dc, GetSysColor(COLOR_WINDOW));
+		FillRect(dc, &page, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+		SetTextColor(dc, GetSysColor(COLOR_WINDOWTEXT));
+		SetBkMode(dc, TRANSPARENT);
+		for (int section = 0; section < 2; ++section)
+		{
+			const wchar_t* title = section == 0 ? L"Enabled commands" : L"Disabled commands";
+			TextOutW(dc, MulDiv(12, dpi, 96), section * sectionHeight + MulDiv(8, dpi, 96), title, lstrlenW(title));
+			for (UINT i = 0; i < QuickAccess::kButtonCount; ++i)
+			{
+				const UINT command = QuickAccess::kFirstButton + i;
+				const bool enabled = SendMessageW(toolbar, TB_ISBUTTONENABLED, command, 0) != 0;
+				SendMessageW(toolbar, TB_ENABLEBUTTON, command, MAKELPARAM(section == 0, 0));
+				const int left = static_cast<int>(i % 6) * cellWidth, top = section * sectionHeight + header + static_cast<int>(i / 6) * cellHeight;
+				PaintCommand(window, toolbar, dc, command, {left, top, left + cellWidth, top + cellHeight});
+				SendMessageW(toolbar, TB_ENABLEBUTTON, command, MAKELPARAM(enabled, 0));
+			}
+		}
+		GdiFlush();
+		const DWORD byteCount = static_cast<DWORD>(width * height * 4);
+		BITMAPFILEHEADER fileHeader{};
+		fileHeader.bfType = 0x4D42;
+		fileHeader.bfOffBits = sizeof(fileHeader) + sizeof(BITMAPINFOHEADER);
+		fileHeader.bfSize = fileHeader.bfOffBits + byteCount;
+		FILE* file = nullptr;
+		bool result = _wfopen_s(&file, path, L"wb") == 0 && file != nullptr;
+		if (result)
+		{
+			result = std::fwrite(&fileHeader, sizeof(fileHeader), 1, file) == 1 &&
+				std::fwrite(&info.bmiHeader, sizeof(BITMAPINFOHEADER), 1, file) == 1 && std::fwrite(pixels, byteCount, 1, file) == 1;
+			result = std::fclose(file) == 0 && result;
+		}
+		SelectObject(dc, old);
+		DeleteObject(bitmap);
+		DeleteDC(dc);
+		return result;
 	}
 
 	std::wstring AccessibleName(HWND control)
@@ -323,6 +390,7 @@ namespace
 			L"queued Enter activates Maximise and restores a visible tab focus target");
 		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
 		SetFocus(tabs);
+		QuickAccess::SelectTab(window, Tab::Home);
 		Expect(QueuedKey(tabs, VK_RIGHT) && QuickAccess::SelectedTab(window) == Tab::View,
 			L"queued tab arrows select pages before the host can translate them");
 		QueuedKey(tabs, VK_RIGHT, WM_KEYUP);
@@ -524,6 +592,7 @@ namespace
 		SetWindowTextW(search, L"   ");
 		Expect(!QuickAccess::Search(window) && host.searches == searches, L"blank query is rejected before host search");
 		SetWindowTextW(search, L"drawing reference");
+		SetFocus(search);
 		SendMessageW(search, WM_KEYDOWN, VK_RETURN, 0);
 		Expect(host.searches == searches + 1 && host.query == L"drawing reference", L"Enter submits the exact query to the host");
 		EnableWindow(owner, FALSE);
@@ -716,7 +785,7 @@ namespace
 	}
 }
 
-int wmain()
+int wmain(int argc, wchar_t* argv[])
 {
 	Expect(sizeof(void*) == 4, L"x86 Explorer architecture");
 	CheckMenuStates();
@@ -737,8 +806,8 @@ int wmain()
 	HWND toolbar = Toolbar(window);
 	Expect(toolbar != nullptr, L"native toolbar control exists");
 	Expect(GetWindow(window, GW_OWNER) == owner, L"toolbar belongs to Explorer owner");
-	Expect((GetWindowLongW(window, GWL_EXSTYLE) & WS_EX_NOACTIVATE) != 0, L"toolbar preserves Explorer focus");
-	Expect(SendMessageW(window, WM_MOUSEACTIVATE, 0, 0) == MA_NOACTIVATE, L"mouse interaction does not steal focus");
+	Expect((GetWindowLongW(window, GWL_EXSTYLE) & WS_EX_NOACTIVATE) == 0, L"floating ribbon allows interactive keyboard focus");
+	Expect(SendMessageW(window, WM_MOUSEACTIVATE, 0, 0) == MA_ACTIVATE, L"mouse interaction can activate floating input controls");
 	Expect(SendMessageW(toolbar, TB_BUTTONCOUNT, 0, 0) == QuickAccess::kButtonCount, L"all ribbon commands are present in the toolbar");
 	constexpr const wchar_t* expected[] = {L"New Folder", L"Add Documents", L"Check Out", L"Check In", L"Free", L"Properties", L"Refresh",
 		L"Open", L"New Document", L"Thumbnails", L"Large Icons", L"Small Icons", L"List", L"Details", L"Manage Views", L"Interface",
@@ -758,7 +827,9 @@ int wmain()
 	ImageList_GetIconSize(images, &width, &height);
 	const int expectedIcon = MulDiv(32, static_cast<int>(GetDpiForWindow(window)), 96);
 	Expect(width == expectedIcon && height == expectedIcon, L"icons are 32 logical pixels at the window DPI");
-	CheckCommandIcons(toolbar);
+	CheckCommandIcons(window, toolbar);
+	if (argc == 3 && wcscmp(argv[1], L"--preview") == 0)
+		Expect(SaveCommandPreview(window, toolbar, argv[2]), L"native enabled/disabled command preview written");
 	RECT rect{};
 	SendMessageW(toolbar, TB_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&rect));
 	Expect(rect.bottom - rect.top >= MulDiv(64, static_cast<int>(GetDpiForWindow(window)), 96), L"large buttons have space for icon and label");

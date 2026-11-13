@@ -55,5 +55,20 @@ jobs:
       - name: Run native keyboard, accessibility, layout and icon checks
         shell: pwsh
         run: |
-          & ./ThirdDigital.ProjectWise.QuickAccess/Checks/out/Win32/Release/bin/AtkinsRealis.ProjectWise.QuickAccess.Checks.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ./ThirdDigital.ProjectWise.QuickAccess/Checks/out/Win32/Release/bin/AtkinsRealis.ProjectWise.QuickAccess.Checks.exe --preview "$env:RUNNER_TEMP/QuickAccess-icons.bmp"
+          $checksResult = $LASTEXITCODE
+          if (Test-Path "$env:RUNNER_TEMP/QuickAccess-icons.bmp") {
+            Add-Type -AssemblyName System.Drawing
+            $preview = [System.Drawing.Image]::FromFile("$env:RUNNER_TEMP/QuickAccess-icons.bmp")
+            try { $preview.Save("$env:RUNNER_TEMP/QuickAccess-icons.png", [System.Drawing.Imaging.ImageFormat]::Png) }
+            finally { $preview.Dispose() }
+          }
+          exit $checksResult
+      - name: Keep the native command icon preview
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: quickaccess-icons
+          path: ${{ runner.temp }}/QuickAccess-icons.png
+          retention-days: 14
+          if-no-files-found: warn
