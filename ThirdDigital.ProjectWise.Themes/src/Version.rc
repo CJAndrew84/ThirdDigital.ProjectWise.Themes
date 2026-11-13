@@ -21,10 +21,10 @@ BEGIN
    VALUE "CompanyName", "Third Digital LLP\0"
    VALUE "FileDescription", "ProjectWise Themes\0"
    VALUE "FileVersion", STRINGIFY(THEMES_VERSION) "\0"
-   VALUE "InternalName", "ThirdDigital.ProjectWise.Themes\0"
+   VALUE "InternalName", "AtkinsRealis.ProjectWise.Themes\0"
    VALUE "LegalCopyright", "Copyright (c) 2026 Third Digital LLP\0"
-   VALUE "OriginalFilename", "ThirdDigital.ProjectWise.Themes.dll\0"
-   VALUE "ProductName", "Third Digital ProjectWise Themes\0"
+   VALUE "OriginalFilename", "AtkinsRealis.ProjectWise.Themes.dll\0"
+   VALUE "ProductName", "AtkinsRealis ProjectWise Themes\0"
    VALUE "ProductVersion", STRINGIFY(THEMES_VERSION) "\0"
   END
  END

@@ -30,11 +30,11 @@ jobs:
           persist-credentials: false
       - name: Run unit tests without the proprietary SDK
         shell: pwsh
-        run: ./ThirdDigital.ProjectWise.Themes.Harness/Verify.ps1 -Suite Unit -Configuration Release -ResultsRoot "$env:RUNNER_TEMP/verification"
+        run: ./AtkinsRealis.ProjectWise.Themes.Harness/Verify.ps1 -Suite Unit -Configuration Release -ResultsRoot "$env:RUNNER_TEMP/verification"
       - name: Compile native regression harnesses
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
           $msbuild = & $vswhere -version '[17.0,18.0)' -requires Microsoft.Component.MSBuild -find 'MSBuild/**/Bin/MSBuild.exe' | Select-Object -First 1
-          & $msbuild ThirdDigital.ProjectWise.Themes.sln -t:ThirdDigital_ProjectWise_Themes_Harness -p:Configuration=Release -p:Platform=x86 -v:minimal
+          & $msbuild AtkinsRealis.ProjectWise.Themes.sln -t:AtkinsRealis_ProjectWise_Themes_Harness -p:Configuration=Release -p:Platform=x86 -v:minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

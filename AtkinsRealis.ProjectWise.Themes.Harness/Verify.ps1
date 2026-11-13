@@ -1,7 +1,7 @@
 #Requires -Version 7.2
 <#
 .SYNOPSIS
-    Builds and verifies ThirdDigital.ProjectWise.Themes (x86 only).
+    Builds and verifies AtkinsRealis.ProjectWise.Themes (x86 only).
 .NOTES
     The ProjectWise SDK location comes from -PWSDKDir or the caller's PWSDKDir environment variable and is
     passed only to the child build process. Evidence (commands, exit codes, logs, TRX, harness output) is
@@ -32,7 +32,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $Repo = Split-Path -Parent $PSScriptRoot
-$Solution = Join-Path $Repo 'ThirdDigital.ProjectWise.Themes.sln'
+$Solution = Join-Path $Repo 'AtkinsRealis.ProjectWise.Themes.sln'
 $Stamp = Get-Date -Format 'yyyyMMdd-HHmmss-fff'
 $Out = Join-Path $ResultsRoot "$Stamp-$Suite-$Configuration"
 New-Item -ItemType Directory -Path $Out -Force | Out-Null
@@ -45,21 +45,21 @@ function Write-Summary([string]$Line) {
 }
 
 $VsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-if (-not (Test-Path -LiteralPath $VsWhere)) { throw "vswhere.exe not found at $VsWhere; Visual Studio 2022 is required." }
-$VsRoot = & $VsWhere -version '[17.0,18.0)' -requires Microsoft.Component.MSBuild -property installationPath | Select-Object -First 1
-$MSBuild = & $VsWhere -version '[17.0,18.0)' -requires Microsoft.Component.MSBuild -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
-if (-not $VsRoot -or -not $MSBuild) { throw 'No Visual Studio 2022 (17.x) installation with MSBuild was found.' }
+if (-not (Test-Path -LiteralPath $VsWhere)) { throw "vswhere.exe not found at $VsWhere; Visual Studio 2022 or newer is required." }
+$VsRoot = & $VsWhere -latest -products '*' -version '[17.0,)' -requires Microsoft.Component.MSBuild -property installationPath | Select-Object -First 1
+$MSBuild = if ($VsRoot) { Join-Path $VsRoot 'MSBuild\Current\Bin\MSBuild.exe' } else { $null }
+if (-not $VsRoot -or -not (Test-Path -LiteralPath $MSBuild)) { throw 'No Visual Studio 2022 or newer installation with MSBuild was found.' }
 $VsTest = Join-Path $VsRoot 'Common7\IDE\Extensions\TestPlatform\vstest.console.exe'
 if (-not (Test-Path -LiteralPath $VsTest)) { throw "vstest.console.exe not found at $VsTest." }
 $DumpBin = Get-ChildItem -Path (Join-Path $VsRoot 'VC\Tools\MSVC\*\bin\Hostx86\x86\dumpbin.exe') -ErrorAction SilentlyContinue |
     Sort-Object FullName -Descending | Select-Object -First 1 -ExpandProperty FullName
-if (-not $DumpBin) { throw 'dumpbin.exe not found in the Visual Studio 2022 installation.' }
+if (-not $DumpBin) { throw 'dumpbin.exe not found in the Visual Studio installation.' }
 
-$NativeHarness = Join-Path $Repo "ThirdDigital.ProjectWise.Themes.Harness\out\Win32\$Configuration\bin\ThirdDigital.ProjectWise.Themes.Harness.exe"
-$WinFormsHarness = Join-Path $Repo "ThirdDigital.ProjectWise.Themes.Harness.WinForms\out\x86\$Configuration\bin\ThirdDigital.ProjectWise.Themes.Harness.WinForms.exe"
-$ModuleDll = Join-Path $Repo "ThirdDigital.ProjectWise.Themes\out\Win32\$Configuration\bin\ThirdDigital.ProjectWise.Themes.dll"
-$BridgeDll = Join-Path $Repo "ThirdDigital.ProjectWise.Themes.Harness\out\Win32\$Configuration\bin\ThirdDigital.ProjectWise.Themes.HarnessBridge.dll"
-$TestsDll = Join-Path $Repo "ThirdDigital.ProjectWise.Themes.Tests\out\Win32\$Configuration\bin\ThirdDigital.ProjectWise.Themes.Tests.dll"
+$NativeHarness = Join-Path $Repo "AtkinsRealis.ProjectWise.Themes.Harness\out\Win32\$Configuration\bin\AtkinsRealis.ProjectWise.Themes.Harness.exe"
+$WinFormsHarness = Join-Path $Repo "AtkinsRealis.ProjectWise.Themes.Harness.WinForms\out\x86\$Configuration\bin\AtkinsRealis.ProjectWise.Themes.Harness.WinForms.exe"
+$ModuleDll = Join-Path $Repo "ThirdDigital.ProjectWise.Themes\out\Win32\$Configuration\bin\AtkinsRealis.ProjectWise.Themes.dll"
+$BridgeDll = Join-Path $Repo "AtkinsRealis.ProjectWise.Themes.Harness\out\Win32\$Configuration\bin\AtkinsRealis.ProjectWise.Themes.HarnessBridge.dll"
+$TestsDll = Join-Path $Repo "AtkinsRealis.ProjectWise.Themes.Tests\out\Win32\$Configuration\bin\AtkinsRealis.ProjectWise.Themes.Tests.dll"
 
 function Invoke-Logged {
     param(
@@ -192,17 +192,17 @@ function Test-PickerImports {
 }
 
 function Test-MissingSdk {
-    $missing = Invoke-Build -Target 'ThirdDigital_ProjectWise_Themes:Rebuild' -Name 'missing-sdk' -Environment @{ PWSDKDir = $null } -AllowFailure
+    $missing = Invoke-Build -Target 'AtkinsRealis_ProjectWise_Themes:Rebuild' -Name 'missing-sdk' -Environment @{ PWSDKDir = $null } -AllowFailure
     if ($missing.ExitCode -eq 0 -or $missing.Content -notmatch 'PWSDKDir is not set') { throw 'MissingSdkFailsClearly failed: the unset SDK was not reported.' }
     $empty = Join-Path $Out 'empty-sdk'
     New-Item -ItemType Directory -Path $empty -Force | Out-Null
-    $wrong = Invoke-Build -Target 'ThirdDigital_ProjectWise_Themes:Rebuild' -Name 'wrong-sdk' -Environment @{ PWSDKDir = $empty } -AllowFailure
+    $wrong = Invoke-Build -Target 'AtkinsRealis_ProjectWise_Themes:Rebuild' -Name 'wrong-sdk' -Environment @{ PWSDKDir = $empty } -AllowFailure
     if ($wrong.ExitCode -eq 0 -or $wrong.Content -notmatch 'include\\aawindms\.h was not found') { throw 'MissingSdkFailsClearly failed: a folder without the SDK was not reported.' }
     Write-Summary 'check MissingSdkFailsClearly: pass'
 }
 
 function Invoke-Unit([string]$TestFilter) {
-    Invoke-Build -Target 'ThirdDigital_ProjectWise_Themes_Tests' -Name 'unit' -Environment (Get-SdkEnvironment $false) | Out-Null
+    Invoke-Build -Target 'AtkinsRealis_ProjectWise_Themes_Tests' -Name 'unit' -Environment (Get-SdkEnvironment $false) | Out-Null
     $trxName = "unit-$Stamp.trx"
     $arguments = @($TestsDll, '/Platform:x86', "/logger:trx;LogFileName=$trxName", "/ResultsDirectory:$Out")
     if ($TestFilter) { $arguments += "/TestCaseFilter:FullyQualifiedName~$TestFilter" }
@@ -456,7 +456,7 @@ try {
 switch ($Suite) {
     'BuildContracts' {
         Test-MissingSdk
-        Invoke-Build -Target 'ThirdDigital_ProjectWise_Themes_Tests:Rebuild' -Name 'tests-without-sdk' -Environment (Get-SdkEnvironment $false) | Out-Null
+        Invoke-Build -Target 'AtkinsRealis_ProjectWise_Themes_Tests:Rebuild' -Name 'tests-without-sdk' -Environment (Get-SdkEnvironment $false) | Out-Null
         Write-Summary 'check TestsBuildWithoutSdk: pass'
         $full = Invoke-Build -Target 'Rebuild' -Name 'rebuild' -Environment (Get-SdkEnvironment $true)
         Test-CompilerFlags $full.Content
@@ -502,7 +502,7 @@ switch ($Suite) {
     'Full' {
         Write-Environment
         Test-MissingSdk
-        Invoke-Build -Target 'ThirdDigital_ProjectWise_Themes_Tests:Rebuild' -Name 'tests-without-sdk' -Environment (Get-SdkEnvironment $false) | Out-Null
+        Invoke-Build -Target 'AtkinsRealis_ProjectWise_Themes_Tests:Rebuild' -Name 'tests-without-sdk' -Environment (Get-SdkEnvironment $false) | Out-Null
         Write-Summary 'check TestsBuildWithoutSdk: pass'
         $full = Invoke-Build -Target 'Rebuild' -Name 'rebuild' -Environment (Get-SdkEnvironment $true)
         Test-CompilerFlags $full.Content

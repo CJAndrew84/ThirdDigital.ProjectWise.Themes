@@ -18,14 +18,14 @@ try {
     if ($dirty -and !$SkipTests) { throw 'Commit release changes before building a verified release.' }
     if (!(Test-Path 'external/minhook/include/MinHook.h')) { throw 'Run git submodule update --init --recursive first.' }
     $suite = if ($SkipTests) { 'Build' } else { 'Full' }
-    & ./ThirdDigital.ProjectWise.Themes.Harness/Verify.ps1 -Suite $suite -Configuration Release -ResultsRoot (Join-Path $output 'verification') -PWSDKDir $PWSDKDir
+    & ./AtkinsRealis.ProjectWise.Themes.Harness/Verify.ps1 -Suite $suite -Configuration Release -ResultsRoot (Join-Path $output 'verification') -PWSDKDir $PWSDKDir
     if ($LASTEXITCODE -ne 0) { throw 'Module verification failed.' }
-    $module = Join-Path $repo 'ThirdDigital.ProjectWise.Themes/out/Win32/Release/bin/ThirdDigital.ProjectWise.Themes.dll'
+    $module = Join-Path $repo 'ThirdDigital.ProjectWise.Themes/out/Win32/Release/bin/AtkinsRealis.ProjectWise.Themes.dll'
     if ((Get-Item $module).VersionInfo.ProductVersion -ne $version) { throw 'DLL version does not match Version.props.' }
-    & dotnet build ./ThirdDigital.ProjectWise.Themes.Install/ThirdDigital.ProjectWise.Themes.Install.wixproj -c Release -v minimal
+    & dotnet build ./AtkinsRealis.ProjectWise.Themes.Install/AtkinsRealis.ProjectWise.Themes.Install.wixproj -c Release -v minimal
     if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
-    $name = "ThirdDigital.ProjectWise.Themes-$version-x86.msi"
-    Copy-Item -LiteralPath (Join-Path $repo "ThirdDigital.ProjectWise.Themes.Install/out/Release/$name") -Destination (Join-Path $output $name) -Force
+    $name = "AtkinsRealis.ProjectWise.Themes-$version-x86.msi"
+    Copy-Item -LiteralPath (Join-Path $repo "AtkinsRealis.ProjectWise.Themes.Install/out/Release/$name") -Destination (Join-Path $output $name) -Force
     $hash = (Get-FileHash (Join-Path $output $name) -Algorithm SHA256).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText((Join-Path $output 'SHA256SUMS.txt'), "$hash  $name`n", [Text.UTF8Encoding]::new($false))
     if (!$SkipTests -and ((& git rev-parse HEAD).Trim() -ne $revision -or (& git status --porcelain))) {

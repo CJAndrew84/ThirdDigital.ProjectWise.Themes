@@ -2,7 +2,7 @@
 
 **Work in progress.** Application testing has only covered **Windows 11 Pro 26H2 (OS build 26300.9457)** with **ProjectWise Explorer CONNECT Edition 10.00.03.434 (32-bit)**. Compatibility with other Windows or ProjectWise Explorer versions is not guaranteed. Installer acceptance of other 10.00.03 builds, including .453, is not evidence of application compatibility.
 
-Maintenance release of Third Digital's colour themes for ProjectWise Explorer CONNECT Edition 10.00.03 (32-bit).
+Maintenance release of AtkinsRealis's colour themes for ProjectWise Explorer CONNECT Edition 10.00.03 (32-bit).
 
 - The Document Export Wizard's heading, description and option captions follow the selected theme. Previously they kept black text on a light background under dark schemes.
 - Radio button and check box captions in ProjectWise dialogs use the theme's text colour, and the theme's disabled text colour when unavailable.

@@ -12,11 +12,10 @@
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
-    <ProjectGuid>{63C36CD0-1E79-4AAE-B4D4-38AD9A7DE750}</ProjectGuid>
+    <ProjectGuid>{CA412D61-EFC1-47C8-9C6E-5CD973577C39}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-    <RootNamespace>ThirdDigitalProjectWiseThemesTests</RootNamespace>
+    <RootNamespace>AtkinsRealisProjectWiseThemesHarnessBridge</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ProjectSubType>NativeUnitTestProject</ProjectSubType>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration">
@@ -32,19 +31,20 @@
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <PropertyGroup>
+    <TargetName>AtkinsRealis.ProjectWise.Themes.HarnessBridge</TargetName>
     <OutDir>$(ProjectDir)out\$(Platform)\$(Configuration)\bin\</OutDir>
-    <IntDir>$(ProjectDir)out\$(Platform)\$(Configuration)\obj\</IntDir>
+    <IntDir>$(ProjectDir)out\$(Platform)\$(Configuration)\bridge\obj\</IntDir>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <ClCompile>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>WIN32;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(VCInstallDir)Auxiliary\VS\UnitTest\include;$(ProjectDir)..\ThirdDigital.ProjectWise.Themes\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;WIN32_LEAN_AND_MEAN;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\ThirdDigital.ProjectWise.Themes\src;$(ProjectDir)..\external\minhook\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(VCInstallDir)Auxiliary\VS\UnitTest\lib\x86;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>uxtheme.lib;comctl32.lib;dwmapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -64,19 +64,30 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="BuildSmokeTests.cpp" />
-    <ClCompile Include="ColourSchemeTests.cpp" />
-    <ClCompile Include="SystemColourMappingTests.cpp" />
+    <ClCompile Include="HarnessBridge.cpp" />
     <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Domain\ColourScheme.cpp" />
     <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Domain\SystemColourMapping.cpp" />
-    <ClCompile Include="ExplorerSurfaceTests.cpp" />
     <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Domain\ExplorerSurface.cpp" />
-    <ClCompile Include="SettingsAndPaletteTests.cpp" />
     <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\Persistence\ThemeSettings.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\SystemColours\SystemColourHooks.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\ControlColours\ControlSubclass.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\TitleBar\TitleBar.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\ThemeSwitch.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\ContextMenus\ContextMenus.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\MenuBar\MenuBar.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\PaintColours\PaintColours.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\DependencyColours\DependencyColours.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\HtmlReports\HtmlReports.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\StatusBar\StatusBar.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\ChildCaption\ChildCaption.cpp" />
+    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Shared\CaptionGlyph.cpp" />
     <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Shared\ActivePalette.cpp" />
     <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Shared\Log.cpp" />
-    <ClCompile Include="ThemeMenuTests.cpp" />
-    <ClCompile Include="..\ThirdDigital.ProjectWise.Themes\src\Features\ThemePicker\ThemeMenuPolicy.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\external\MinHook.vcxproj">
+      <Project>{50966531-BB1E-4E3F-AACF-49FC2CFC0684}</Project>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

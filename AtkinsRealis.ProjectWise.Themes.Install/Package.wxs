@@ -1,7 +1,7 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
-  <Package Name="Third Digital ProjectWise Themes" Manufacturer="Third Digital LLP"
+  <Package Name="AtkinsRealis ProjectWise Themes" Manufacturer="Third Digital LLP"
            Version="$(var.ThemesVersion)" UpgradeCode="D1E28A3C-4E02-4C8A-BADB-0A5F17163559"
            Language="1033" Scope="perMachine" InstallerVersion="500" Compressed="yes">
     <MajorUpgrade DowngradeErrorMessage="A newer version of ProjectWise Themes is already installed."
@@ -20,6 +20,15 @@
         </DirectorySearch>
       </RegistrySearch>
     </Property>
+    <Property Id="PW23ROOT" Secure="yes">
+      <RegistrySearch Id="FindProjectWise23" Root="HKLM" Key="SOFTWARE\Bentley\ProjectWise"
+                      Name="Path" Type="directory" Bitness="always32">
+        <DirectorySearch Id="FindPw23Bin" Path="bin">
+          <!-- MSI compares languages at an equal MinVersion; use the preceding revision to find .12 in any language. -->
+          <FileSearch Id="FindPw23Explorer" Name="pwc.exe" MinVersion="23.6.3.11" MaxVersion="23.6.3.65535" />
+        </DirectorySearch>
+      </RegistrySearch>
+    </Property>
     <Property Id="VCRUNTIME">
       <DirectorySearch Id="FindVcRuntimeFolder" Path="[SystemFolder]" Depth="0">
         <FileSearch Id="FindVcRuntimeFile" Name="vcruntime140.dll" MinVersion="14.44.35207.0" />
@@ -30,8 +39,8 @@
         <FileSearch Id="FindVcCppFile" Name="msvcp140.dll" MinVersion="14.44.35207.0" />
       </DirectorySearch>
     </Property>
-    <Launch Condition="Installed OR PWROOT"
-            Message="Install ProjectWise Explorer CONNECT Edition 10.00.03 (32-bit) before installing ProjectWise Themes." />
+    <Launch Condition="Installed OR PWROOT OR PW23ROOT"
+            Message="Install 32-bit ProjectWise Explorer 10.00.03 or 23.06.03.12 (or later 23.06.03) before installing ProjectWise Themes." />
     <Launch Condition="Installed OR (VCRUNTIME AND VCCPPRUNTIME)"
             Message="Install Microsoft Visual C++ v14 Redistributable (x86), version 14.44 or newer, then run this installer again. Download: https://aka.ms/vc14/vc_redist.x86.exe" />
 
@@ -46,12 +55,19 @@
     <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT" Value="Open ProjectWise Explorer and choose Tools > Colour Theme to get started." />
 
     <StandardDirectory Id="ProgramFilesFolder">
-      <Directory Id="ThirdDigitalFolder" Name="Third Digital">
+      <Directory Id="AtkinsRealisFolder" Name="AtkinsRealis">
         <Directory Id="INSTALLFOLDER" Name="ProjectWise Themes">
           <Component Id="Module" Guid="A1E573E1-7630-476E-98D6-A8D889427FBD" Bitness="always32">
             <File Id="ThemesDll" Source="$(var.ModulePath)" KeyPath="yes" />
             <RegistryKey Root="HKLM" Key="SOFTWARE\Bentley\ProjectWise\10.00\CustomModules\ThirdDigital.ProjectWise.Themes">
               <RegistryValue Name="Library" Type="string" Value="[#ThemesDll]" />
+              <RegistryValue Name="Function" Type="string" Value="CustomInitialize" />
+              <RegistryValue Name="Application Mask" Type="integer" Value="1" />
+            </RegistryKey>
+          </Component>
+          <Component Id="Module23Registration" Guid="D5A17A58-FB45-4F4F-BD59-13492A38A74C" Bitness="always32" Condition="PW23ROOT" Transitive="yes">
+            <RegistryKey Root="HKLM" Key="SOFTWARE\Bentley\ProjectWise\CustomModules\ThirdDigital.ProjectWise.Themes">
+              <RegistryValue Name="Library" Type="string" Value="[INSTALLFOLDER]AtkinsRealis.ProjectWise.Themes.dll" KeyPath="yes" />
               <RegistryValue Name="Function" Type="string" Value="CustomInitialize" />
               <RegistryValue Name="Application Mask" Type="integer" Value="1" />
             </RegistryKey>
@@ -73,6 +89,7 @@
     </StandardDirectory>
     <Feature Id="Themes" Title="ProjectWise Themes" Level="1">
       <ComponentRef Id="Module" />
+      <ComponentRef Id="Module23Registration" />
       <ComponentRef Id="Licence" />
       <ComponentRef Id="MinHookLicence" />
       <ComponentRef Id="Readme" />

@@ -18,7 +18,7 @@ try {
     $version = ([xml](Get-Content Version.props -Raw)).Project.PropertyGroup.ThemesVersion
     $commit = (& git rev-parse HEAD).Trim()
     $evidence = Get-Content (Join-Path $OutputDirectory 'build-evidence.json') -Raw | ConvertFrom-Json
-    $asset = Join-Path $OutputDirectory "ThirdDigital.ProjectWise.Themes-$version-x86.msi"
+    $asset = Join-Path $OutputDirectory "AtkinsRealis.ProjectWise.Themes-$version-x86.msi"
     if ($evidence.commit -ne $commit -or $evidence.version -ne $version -or $evidence.tests -ne 'Full') {
         throw 'Build and run the full verification suite at the committed release revision first.'
     }

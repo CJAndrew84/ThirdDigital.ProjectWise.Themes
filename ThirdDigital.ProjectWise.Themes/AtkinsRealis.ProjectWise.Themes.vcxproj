@@ -14,7 +14,7 @@
     <VCProjectVersion>17.0</VCProjectVersion>
     <ProjectGuid>{CE85F654-FBBB-4ACD-ACDA-9DB40D3D5C81}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
-    <RootNamespace>ThirdDigitalProjectWiseThemes</RootNamespace>
+    <RootNamespace>AtkinsRealisProjectWiseThemes</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -84,7 +84,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\ThirdDigital.ProjectWise.Themes.cpp" />
+    <ClCompile Include="src\AtkinsRealis.ProjectWise.Themes.cpp" />
     <ClCompile Include="src\Domain\ColourScheme.cpp" />
     <ClCompile Include="src\Domain\SystemColourMapping.cpp" />
     <ClCompile Include="src\Domain\ExplorerSurface.cpp" />
@@ -128,7 +128,7 @@
     <ClInclude Include="src\Features\ThemePicker\ThemeMenuPolicy.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="src\ThirdDigital.ProjectWise.Themes.def" />
+    <None Include="src\AtkinsRealis.ProjectWise.Themes.def" />
     <ResourceCompile Include="src\Version.rc" />
   </ItemGroup>
   <ItemGroup>
@@ -140,8 +140,8 @@
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
   <Target Name="CheckProjectWiseSdk" BeforeTargets="PrepareForBuild">
-    <Error Condition="'$(PWSDKDir)' == ''" Text="PWSDKDir is not set. Set the PWSDKDir environment variable for the build to the root of the Bentley ProjectWise SDK 10.00.03 (the folder containing include\aawindms.h and lib\Win32\dmawin.lib)." />
-    <Error Condition="'$(PWSDKDir)' != '' and !Exists('$(PWSDKDir)\include\aawindms.h')" Text="PWSDKDir is '$(PWSDKDir)' but include\aawindms.h was not found there. Point PWSDKDir at the root of the Bentley ProjectWise SDK 10.00.03." />
-    <Error Condition="'$(PWSDKDir)' != '' and !Exists('$(PWSDKDir)\lib\Win32\dmawin.lib')" Text="PWSDKDir is '$(PWSDKDir)' but lib\Win32\dmawin.lib was not found there. Point PWSDKDir at the root of the Bentley ProjectWise SDK 10.00.03 (32-bit libraries are required)." />
+    <Error Condition="'$(PWSDKDir)' == ''" Text="PWSDKDir is not set. Set the PWSDKDir environment variable for the build to the root of the Bentley ProjectWise SDK (the folder containing include\aawindms.h and lib\Win32\dmawin.lib)." />
+    <Error Condition="'$(PWSDKDir)' != '' and !Exists('$(PWSDKDir)\include\aawindms.h')" Text="PWSDKDir is '$(PWSDKDir)' but include\aawindms.h was not found there. Point PWSDKDir at the root of the Bentley ProjectWise SDK." />
+    <Error Condition="'$(PWSDKDir)' != '' and !Exists('$(PWSDKDir)\lib\Win32\dmawin.lib')" Text="PWSDKDir is '$(PWSDKDir)' but lib\Win32\dmawin.lib was not found there. Point PWSDKDir at the root of the Bentley ProjectWise SDK (32-bit libraries are required)." />
   </Target>
 </Project>

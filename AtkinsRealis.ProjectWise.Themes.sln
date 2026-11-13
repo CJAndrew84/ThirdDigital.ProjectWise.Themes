@@ -3,17 +3,17 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ThirdDigital.ProjectWise.Themes", "ThirdDigital.ProjectWise.Themes\ThirdDigital.ProjectWise.Themes.vcxproj", "{CE85F654-FBBB-4ACD-ACDA-9DB40D3D5C81}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AtkinsRealis.ProjectWise.Themes", "ThirdDigital.ProjectWise.Themes\AtkinsRealis.ProjectWise.Themes.vcxproj", "{CE85F654-FBBB-4ACD-ACDA-9DB40D3D5C81}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "MinHook", "external\MinHook.vcxproj", "{50966531-BB1E-4E3F-AACF-49FC2CFC0684}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ThirdDigital.ProjectWise.Themes.Tests", "ThirdDigital.ProjectWise.Themes.Tests\ThirdDigital.ProjectWise.Themes.Tests.vcxproj", "{63C36CD0-1E79-4AAE-B4D4-38AD9A7DE750}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AtkinsRealis.ProjectWise.Themes.Tests", "AtkinsRealis.ProjectWise.Themes.Tests\AtkinsRealis.ProjectWise.Themes.Tests.vcxproj", "{63C36CD0-1E79-4AAE-B4D4-38AD9A7DE750}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ThirdDigital.ProjectWise.Themes.Harness", "ThirdDigital.ProjectWise.Themes.Harness\ThirdDigital.ProjectWise.Themes.Harness.vcxproj", "{6B71DBB8-E8F2-476C-9C75-546964A85EF1}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AtkinsRealis.ProjectWise.Themes.Harness", "AtkinsRealis.ProjectWise.Themes.Harness\AtkinsRealis.ProjectWise.Themes.Harness.vcxproj", "{6B71DBB8-E8F2-476C-9C75-546964A85EF1}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "ThirdDigital.ProjectWise.Themes.Harness.WinForms", "ThirdDigital.ProjectWise.Themes.Harness.WinForms\ThirdDigital.ProjectWise.Themes.Harness.WinForms.csproj", "{748B860B-14F9-4454-B693-753879F3A510}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "AtkinsRealis.ProjectWise.Themes.Harness.WinForms", "AtkinsRealis.ProjectWise.Themes.Harness.WinForms\AtkinsRealis.ProjectWise.Themes.Harness.WinForms.csproj", "{748B860B-14F9-4454-B693-753879F3A510}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ThirdDigital.ProjectWise.Themes.HarnessBridge", "ThirdDigital.ProjectWise.Themes.Harness\HarnessBridge.vcxproj", "{CA412D61-EFC1-47C8-9C6E-5CD973577C39}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AtkinsRealis.ProjectWise.Themes.HarnessBridge", "AtkinsRealis.ProjectWise.Themes.Harness\HarnessBridge.vcxproj", "{CA412D61-EFC1-47C8-9C6E-5CD973577C39}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

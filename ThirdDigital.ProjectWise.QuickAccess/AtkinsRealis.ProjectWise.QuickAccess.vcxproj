@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+	<ProjectConfiguration Include="Debug|Win32"><Configuration>Debug</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+	<ProjectConfiguration Include="Release|Win32"><Configuration>Release</Configuration><Platform>Win32</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+	<VCProjectVersion>17.0</VCProjectVersion>
+	<ProjectGuid>{0C602B71-7971-465F-BD44-7524E7372A91}</ProjectGuid>
+	<Keyword>Win32Proj</Keyword>
+	<WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+	<ConfigurationType>DynamicLibrary</ConfigurationType>
+	<PlatformToolset>v143</PlatformToolset>
+	<CharacterSet>Unicode</CharacterSet>
+	<UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+	<UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+	<OutDir>$(ProjectDir)out\$(Platform)\$(Configuration)\bin\</OutDir>
+	<IntDir>$(ProjectDir)out\$(Platform)\$(Configuration)\obj\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+	<ClCompile>
+	  <SDLCheck>true</SDLCheck>
+	  <PreprocessorDefinitions>WIN32;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+	  <AdditionalIncludeDirectories>$(PWSDKDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+	</ClCompile>
+	<Link>
+	  <SubSystem>Windows</SubSystem>
+	  <ModuleDefinitionFile>src\QuickAccess.def</ModuleDefinitionFile>
+	  <AdditionalDependencies>comctl32.lib;shell32.lib;dmawin.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+	  <AdditionalLibraryDirectories>$(PWSDKDir)\lib\Win32;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+	  <DelayLoadDLLs>dmawin.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+	  <GenerateDebugInformation>true</GenerateDebugInformation>
+	</Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+	<ClCompile Include="src\Module.cpp" />
+	<ClCompile Include="src\QuickAccess.cpp" />
+	<ClInclude Include="src\QuickAccess.h" />
+	<None Include="src\QuickAccess.def" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="CheckProjectWiseSdk" BeforeTargets="PrepareForBuild">
+	<Error Condition="'$(PWSDKDir)' == ''" Text="PWSDKDir is not set. Point it at the ProjectWise SDK root." />
+	<Error Condition="!Exists('$(PWSDKDir)\include\aawindms.h') or !Exists('$(PWSDKDir)\lib\Win32\dmawin.lib')" Text="The ProjectWise SDK must contain include\aawindms.h and lib\Win32\dmawin.lib. Explorer 23.06 uses an x86 module." />
+  </Target>
+</Project>

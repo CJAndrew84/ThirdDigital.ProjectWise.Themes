@@ -1,7 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace ThirdDigital.ProjectWise.Themes.Harness.WinForms
+namespace AtkinsRealis.ProjectWise.Themes.Harness.WinForms
 {
     internal static class NativeMethods
     {

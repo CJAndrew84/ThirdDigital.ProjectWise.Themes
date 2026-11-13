@@ -2,7 +2,7 @@
 
 #include "Domain/ColourScheme.h"
 
-// HKCU\Software\Third Digital\ProjectWise Themes, value "Scheme". The TDPWTHEMES_SETTINGS_KEY environment
+// HKCU\Software\AtkinsRealis\ProjectWise Themes, value "Scheme". The TDPWTHEMES_SETTINGS_KEY environment
 // variable replaces the subkey path beneath HKCU so tests never touch the real preference.
 const ColourScheme* ReadSelection() noexcept;
 

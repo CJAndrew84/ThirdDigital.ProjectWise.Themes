@@ -5,7 +5,7 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-namespace ThirdDigital.ProjectWise.Themes.Harness.WinForms
+namespace AtkinsRealis.ProjectWise.Themes.Harness.WinForms
 {
     internal sealed class ThemeForm : Form
     {

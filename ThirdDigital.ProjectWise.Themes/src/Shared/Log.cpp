@@ -27,7 +27,7 @@ void Log(const wchar_t* format, ...) noexcept
     {
         return;
     }
-    if (wcscat_s(path, L"ThirdDigital") != 0)
+    if (wcscat_s(path, L"AtkinsRealis") != 0)
     {
         return;
     }

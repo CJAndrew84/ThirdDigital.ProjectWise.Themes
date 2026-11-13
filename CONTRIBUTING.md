@@ -19,17 +19,17 @@ Remove private datasource URLs, project/document names, account details and cred
 
 See the [README](README.md#building) for Visual Studio and SDK prerequisites. The proprietary Bentley SDK is not distributed here.
 
-Unit tests do not require that SDK. From PowerShell 7.2 or later on Windows with Visual Studio 2022:
+Unit tests do not require that SDK. From PowerShell 7.2 or later on Windows with Visual Studio 2022 or newer and the v143 toolset:
 
 ```powershell
-./ThirdDigital.ProjectWise.Themes.Harness/Verify.ps1 -Suite Unit -Configuration Release -ResultsRoot "$env:TEMP/pw-themes-verification"
+./AtkinsRealis.ProjectWise.Themes.Harness/Verify.ps1 -Suite Unit -Configuration Release -ResultsRoot "$env:TEMP/pw-themes-verification"
 ./build/Check-Repository.ps1
 ```
 
 For changes to hooks, drawing or lifecycle behaviour, run the full suite on a machine with the licensed SDK and the required .NET Framework targeting pack:
 
 ```powershell
-./ThirdDigital.ProjectWise.Themes.Harness/Verify.ps1 -Suite Full -Configuration Release -ResultsRoot "$env:TEMP/pw-themes-verification" -PWSDKDir 'C:\path\to\ProjectWise SDK'
+./AtkinsRealis.ProjectWise.Themes.Harness/Verify.ps1 -Suite Full -Configuration Release -ResultsRoot "$env:TEMP/pw-themes-verification" -PWSDKDir 'C:\path\to\ProjectWise SDK'
 ```
 
 Visual changes also need checks in Explorer: the affected page, dark and light themes, live switching, newly opened windows and **None**. Use a test environment and sanitise evidence. Passing the synthetic harness does not prove compatibility with every ProjectWise build.

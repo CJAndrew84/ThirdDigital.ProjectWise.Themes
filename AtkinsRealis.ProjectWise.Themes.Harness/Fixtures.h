@@ -182,7 +182,7 @@ namespace Harness
 
     bool LoadProductionModule(Recorder& r, const CheckContext& context, ProductionModule& module);
 
-    // Lines of %TEMP%\ThirdDigital\projectwise-themes.log containing `text`.
+    // Lines of %TEMP%\AtkinsRealis\projectwise-themes.log containing `text`.
     int LogLines(const wchar_t* text);
 
     // Windows covering list-view, tree-view, edit, button, static, a modeless dialog, a menu bar and a hidden

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Win32;
 
-namespace ThirdDigital.ProjectWise.Themes.Harness.WinForms
+namespace AtkinsRealis.ProjectWise.Themes.Harness.WinForms
 {
     internal sealed class CheckContext
     {

@@ -331,7 +331,7 @@ public:
         Assert::IsTrue(text.str().find("unit test entry 42") != std::string::npos, L"log line is appended as UTF-8");
         file.close();
         DeleteFileW((good + L"\\ThirdDigital\\projectwise-themes.log").c_str());
-        RemoveDirectoryW((good + L"\\ThirdDigital").c_str());
+        RemoveDirectoryW((good + L"\\AtkinsRealis").c_str());
 
         const std::wstring blocker = good + L"\\blocker";
         HANDLE handle = CreateFileW(blocker.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
