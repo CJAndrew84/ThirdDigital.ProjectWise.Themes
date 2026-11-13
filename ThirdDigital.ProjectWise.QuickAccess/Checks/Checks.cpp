@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <algorithm>
 
 namespace
 {
@@ -44,6 +45,12 @@ namespace
 		HWND destroyOnNavigationRefresh = nullptr;
 		HWND destroyOnNavigate = nullptr;
 		HWND destroyOnAddressRefresh = nullptr;
+		QuickAccess::WorkflowState workflow;
+		bool workflowAvailable = true;
+		unsigned workflowExecutions = 0;
+		UINT lastWorkflowCommand = 0;
+		HWND destroyOnWorkflowRefresh = nullptr;
+		HWND destroyOnWorkflowExecute = nullptr;
 
 		static bool Refresh(void* context, QuickAccess::States& result)
 		{
@@ -131,7 +138,87 @@ namespace
 			}
 			return host.addressAvailable;
 		}
+
+		static bool RefreshWorkflow(void* context, QuickAccess::WorkflowState& result)
+		{
+			auto& host = *static_cast<FakeHost*>(context);
+			result = host.workflow;
+			if (host.destroyOnWorkflowRefresh != nullptr)
+			{
+				const HWND window = host.destroyOnWorkflowRefresh;
+				host.destroyOnWorkflowRefresh = nullptr;
+				DestroyWindow(window);
+			}
+			return host.workflowAvailable;
+		}
+
+		static bool ExecuteWorkflow(void* context, const QuickAccess::WorkflowState& shown, UINT command)
+		{
+			auto& host = *static_cast<FakeHost*>(context);
+			if (!QuickAccess::CanInvokeWorkflow(shown, host.workflow, command)) return false;
+			++host.workflowExecutions;
+			host.lastWorkflowCommand = command;
+			if (host.destroyOnWorkflowExecute != nullptr)
+			{
+				const HWND window = host.destroyOnWorkflowExecute;
+				host.destroyOnWorkflowExecute = nullptr;
+				DestroyWindow(window);
+			}
+			return host.executeSucceeds;
+		}
 	};
+
+	void CheckWorkflowMenus()
+	{
+		using Kind = QuickAccess::WorkflowActionKind;
+		const QuickAccess::WorkflowMenuIds ids{501, 502, 503, 504, 505};
+		HMENU root = CreatePopupMenu(), documents = CreatePopupMenu(), state = CreatePopupMenu();
+		AppendMenuW(root, MF_POPUP, reinterpret_cast<UINT_PTR>(documents), L"Documents");
+		AppendMenuW(documents, MF_STRING, 900, L"Unrelated action");
+		AppendMenuW(documents, MF_POPUP, reinterpret_cast<UINT_PTR>(state), L"Changer l'état");
+		AppendMenuW(state, MF_STRING, ids.change, L"&Change...\tCtrl+G");
+		AppendMenuW(state, MF_STRING | MF_GRAYED, ids.previous, L"&Previous");
+		AppendMenuW(state, MF_STRING, ids.next, L"&Next");
+		AppendMenuW(state, MF_SEPARATOR, 0, nullptr);
+		AppendMenuW(state, MF_STRING, ids.setFinal, L"Set Final Status");
+		AppendMenuW(state, MF_STRING, ids.removeFinal, L"Remove Final Status");
+		QuickAccess::WorkflowState result{true, false, L"source/folder/documents", {}};
+		Expect(QuickAccess::ReadWorkflowMenu(root, ids, true, result) && result.actions.size() == 3 && !result.rulesEngine,
+			L"standard workflow exposes exactly Next, Previous and Change from the localised state submenu");
+		Expect(result.actions[0].command == ids.next && result.actions[1].command == ids.previous && result.actions[2].command == ids.change &&
+			result.actions[0].label == L"Next" && result.actions[2].label == L"Change...", L"standard actions use requested order and clean native labels");
+		Expect(result.actions[0].enabled && !result.actions[1].enabled && result.actions[2].enabled, L"standard actions preserve individual native permissions");
+		EnableMenuItem(documents, 1, MF_BYPOSITION | MF_GRAYED);
+		QuickAccess::ReadWorkflowMenu(root, ids, true, result);
+		Expect(std::none_of(result.actions.begin(), result.actions.end(), [](const auto& a) { return a.enabled; }), L"disabled native parent disables every workflow child");
+		EnableMenuItem(documents, 1, MF_BYPOSITION | MF_ENABLED);
+		AppendMenuW(state, MF_STRING, 801, L"&Approuver && publier...\tCtrl+A");
+		AppendMenuW(state, MF_STRING | MF_GRAYED, 802, L"Réviser...");
+		Expect(QuickAccess::ReadWorkflowMenu(root, ids, true, result) && result.rulesEngine && result.actions.size() == 2,
+			L"WRE operations replace the three standard transitions and exclude final-status and unrelated commands");
+		Expect(result.actions[0].command == 801 && result.actions[0].label == L"Approuver & publier..." && result.actions[0].enabled &&
+			result.actions[1].kind == Kind::Operation && !result.actions[1].enabled, L"WRE labels, order, literal ampersands and disabled state follow the native menu");
+		const auto shown = result;
+		Expect(QuickAccess::CanInvokeWorkflow(shown, result, 801) && !QuickAccess::CanInvokeWorkflow(shown, result, 802), L"only enabled displayed workflow operations can run");
+		result.context = L"other source/folder/selection";
+		Expect(!QuickAccess::CanInvokeWorkflow(shown, result, 801), L"a changed datasource, folder or document selection invalidates workflow actions");
+		result = shown; result.actions[0].enabled = false;
+		Expect(!QuickAccess::CanInvokeWorkflow(shown, result, 801), L"lost permissions invalidate a previously enabled workflow operation");
+		result = shown; result.actions[0].label = L"A different operation";
+		Expect(!QuickAccess::CanInvokeWorkflow(shown, result, 801), L"a reused native command ID cannot execute a relabelled operation");
+		result = shown; result.actions.erase(result.actions.begin());
+		Expect(!QuickAccess::CanInvokeWorkflow(shown, result, 801), L"a removed operation cannot execute from a stale button");
+		result = shown; result.rulesEngine = false;
+		Expect(!QuickAccess::CanInvokeWorkflow(shown, result, 801), L"switching WRE/standard mode invalidates stale workflow actions");
+		result = shown; result.visible = false;
+		Expect(!QuickAccess::CanInvokeWorkflow(shown, result, 801) && !QuickAccess::CanInvokeWorkflow(shown, shown, 999), L"hidden workflows and unknown command IDs cannot run");
+		QuickAccess::ReadWorkflowMenu(root, ids, false, result);
+		Expect(std::none_of(result.actions.begin(), result.actions.end(), [](const auto& a) { return a.enabled; }), L"no actionable document selection disables every WRE operation");
+		AppendMenuW(state, MF_STRING, 801, L"Duplicate command");
+		Expect(!QuickAccess::ReadWorkflowMenu(root, ids, true, result) && result.actions.empty(), L"ambiguous duplicate workflow IDs fail closed");
+		DestroyMenu(root);
+		Expect(!QuickAccess::ReadWorkflowMenu(nullptr, ids, true, result) && result.actions.empty(), L"missing workflow menus do not fabricate operations");
+	}
 
 	void CheckNavigationAvailability()
 	{
@@ -819,6 +906,121 @@ namespace
 		DestroyWindow(content);
 	}
 
+	void CheckWorkflowRibbon(HWND owner)
+	{
+		using QuickAccess::Tab;
+		using QuickAccess::DisplayMode;
+		using Kind = QuickAccess::WorkflowActionKind;
+		FakeHost host;
+		for (auto& item : host.states) item.enabled = true;
+		const QuickAccess::Host callbacks{&host, FakeHost::Refresh, FakeHost::Execute, FakeHost::Search, FakeHost::CreateAddress,
+			FakeHost::RefreshNavigation, FakeHost::Navigate, nullptr, FakeHost::RefreshAddress, FakeHost::RefreshWorkflow, FakeHost::ExecuteWorkflow};
+		const HINSTANCE instance = GetModuleHandleW(nullptr);
+		HWND content = CreateWindowExW(0, L"STATIC", L"Workflow test content", WS_CHILD | WS_VISIBLE,
+			0, 40, 640, 600, owner, reinterpret_cast<HMENU>(0xE900), instance, nullptr);
+		HWND window = QuickAccess::Create(owner, instance, callbacks);
+		Expect(window != nullptr, L"workflow-aware ribbon created");
+		if (window == nullptr) { DestroyWindow(content); return; }
+		ShowWindow(window, SW_SHOWNOACTIVATE);
+		QuickAccess::Dock(window, true);
+		HWND tabs = FindWindowExW(window, nullptr, WC_TABCONTROLW, nullptr);
+		Expect(TabCtrl_GetItemCount(tabs) == 4 && !QuickAccess::SelectTab(window, Tab::Workflow), L"Workflow tab is absent and cannot be selected without an applicable workflow");
+		host.workflow = {true, false, L"source/folder/10,11", {{501, L"Next", true, Kind::Next}, {502, L"Previous", false, Kind::Previous}, {503, L"Change...", true, Kind::Change}}};
+		QuickAccess::Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 5, L"applicable workflow inserts exactly one conditional tab");
+		QuickAccess::Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 5, L"repeated workflow refresh does not duplicate tabs or controls");
+		SetFocus(tabs);
+		Expect(QueuedKey(tabs, VK_END) && QuickAccess::SelectedTab(window) == Tab::Workflow, L"End on the tab strip reaches the conditional Workflow tab");
+		QueuedKey(tabs, VK_END, WM_KEYUP);
+		HWND page = CommandPage(window), next = GetDlgItem(page, QuickAccess::kFirstWorkflow), previous = GetDlgItem(page, QuickAccess::kFirstWorkflow + 1), change = GetDlgItem(page, QuickAccess::kFirstWorkflow + 2);
+		Expect(IsWindowVisible(next) && !IsWindowVisible(Toolbar(window)) && !IsWindowEnabled(previous), L"workflow commands replace the ordinary toolbar and preserve disabled Previous state");
+		Expect(AccessibleName(next) == L"Next" && AccessibleName(change) == L"Change...", L"native workflow buttons expose their complete accessible names");
+		Expect(QueuedKey(tabs, VK_DOWN) && GetFocus() == next, L"Down Arrow enters the first enabled workflow action");
+		QueuedKey(next, VK_DOWN, WM_KEYUP);
+		Expect(QueuedKey(next, VK_RIGHT) && GetFocus() == change, L"workflow arrow navigation skips disabled actions");
+		QueuedKey(change, VK_RIGHT, WM_KEYUP);
+		Expect(QueuedKey(change, VK_HOME) && GetFocus() == next, L"Home returns to the first workflow action");
+		QueuedKey(next, VK_HOME, WM_KEYUP);
+		const unsigned before = host.workflowExecutions;
+		Expect(QueuedKey(next, VK_RETURN) && host.workflowExecutions == before + 1 && host.lastWorkflowCommand == 501,
+			L"queued Enter dispatches the selected native workflow command exactly once");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		SendMessageW(next, WM_KEYDOWN, VK_SPACE, 0);
+		SendMessageW(next, WM_KEYUP, VK_SPACE, 0);
+		Expect(host.workflowExecutions == before + 2, L"native Space activation works for workflow buttons");
+		Expect(!QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow + 1) && host.workflowExecutions == before + 2,
+			L"disabled workflow actions cannot dispatch through the direct API");
+		SetFocus(change);
+		Expect(QueuedKey(change, VK_TAB) && GetDlgCtrlID(GetFocus()) == QuickAccess::kFirstNavigation, L"Tab leaves the whole workflow action group for navigation");
+		QueuedKey(GetFocus(), VK_TAB, WM_KEYUP);
+		SetFocus(change);
+		Expect(QuickAccess::HandleKey(window, VK_TAB, true) && GetFocus() == GetDlgItem(window, QuickAccess::kHide), L"Shift+Tab leaves the workflow group in reverse visual order");
+		host.workflow.context = L"source/folder/12";
+		const unsigned beforeStale = host.workflowExecutions;
+		Expect(!QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow) && host.workflowExecutions == beforeStale,
+			L"a selection change between rendering and clicking rejects the stale workflow action");
+		Expect(GetFocus() == tabs || GetFocus() == GetDlgItem(window, QuickAccess::kHide), L"selection-driven workflow rebuilding retains visible focus");
+		host.workflow.rulesEngine = true;
+		host.workflow.actions = {{801, L"Start quality review", true, Kind::Operation}, {802, L"Approve & publish", true, Kind::Operation},
+			{803, L"Revise", false, Kind::Operation}, {804, L"Review", true, Kind::Operation}, {805, L"Issue for construction", true, Kind::Operation},
+			{806, L"Reject", true, Kind::Operation}, {807, L"Archive", true, Kind::Operation}, {808, L"Reopen", true, Kind::Operation}};
+		QuickAccess::Refresh(window);
+		page = CommandPage(window);
+		Expect(GetDlgItem(page, QuickAccess::kFirstWorkflow + 7) != nullptr && AccessibleName(GetDlgItem(page, QuickAccess::kFirstWorkflow + 1)) == L"Approve & publish",
+			L"WRE changes replace standard buttons with all configured operations and preserve literal accessible labels");
+		Expect(!QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow + 2), L"disabled WRE operations remain non-executable");
+		SetFocus(tabs);
+		QuickAccess::HandleKey(window, VK_DOWN);
+		Expect(QuickAccess::HandleKey(window, VK_END) && GetDlgCtrlID(GetFocus()) == QuickAccess::kFirstWorkflow + 7,
+			L"End reaches the last enabled WRE operation");
+		RECT button = RelativeRect(GetFocus(), page), viewport{};
+		GetClientRect(page, &viewport);
+		Expect(button.left >= 0 && button.right <= viewport.right, L"keyboard-focused WRE actions scroll fully into a narrow window");
+		const unsigned wreBefore = host.workflowExecutions;
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && host.workflowExecutions == wreBefore + 1 && host.lastWorkflowCommand == 808,
+			L"keyboard activation dispatches the exact configured WRE operation ID");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		host.workflow.actions[7].enabled = false;
+		QuickAccess::Refresh(window);
+		Expect(IsWindowVisible(GetFocus()) && IsWindowEnabled(GetFocus()), L"revoking a focused WRE action leaves focus on a visible enabled control");
+		QuickAccess::SelectTab(window, Tab::Home);
+		Expect(!QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow), L"workflow actions cannot run from another tab");
+		QuickAccess::SelectTab(window, Tab::Workflow);
+		EnableWindow(owner, FALSE);
+		Expect(!QuickAccess::HandleKey(window, VK_RETURN) && !QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow), L"modal Explorer blocks workflow shortcuts and execution");
+		EnableWindow(owner, TRUE);
+		QuickAccess::SetDisplayMode(window, DisplayMode::Minimized);
+		QuickAccess::SelectTab(window, Tab::Workflow);
+		SetFocus(tabs);
+		QuickAccess::HandleKey(window, VK_DOWN);
+		Expect(QuickAccess::IsPopupOpen(window) && GetDlgCtrlID(GetFocus()) == QuickAccess::kFirstWorkflow, L"minimized Workflow tab opens a keyboard-accessible command popup");
+		host.workflow = {};
+		QuickAccess::Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 4 && QuickAccess::SelectedTab(window) == Tab::Home && !QuickAccess::IsPopupOpen(window) && GetFocus() == tabs,
+			L"losing the workflow removes its tab and popup and returns focus to Home tabs");
+		Expect(!QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow), L"removed workflow controls cannot dispatch");
+		host.workflow = {true, false, L"folder with no selected documents", {}};
+		QuickAccess::Refresh(window);
+		Expect(QuickAccess::SelectTab(window, Tab::Workflow) && GetDlgItem(page, QuickAccess::kFirstWorkflow) == nullptr,
+			L"a workflow folder without a document selection exposes no executable document actions");
+		host.workflowAvailable = false;
+		QuickAccess::Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 4 && QuickAccess::SelectedTab(window) == Tab::Home, L"failed workflow queries remove stale controls");
+		host.workflowAvailable = true;
+		host.workflow = {true, true, L"source/folder/doc", {{801, L"Approve", true, Kind::Operation}}};
+		QuickAccess::Refresh(window);
+		host.destroyOnWorkflowRefresh = window;
+		QuickAccess::Refresh(window);
+		Expect(!IsWindow(window), L"destruction during workflow refresh is safe");
+		window = QuickAccess::Create(owner, instance, callbacks);
+		ShowWindow(window, SW_SHOWNOACTIVATE);
+		QuickAccess::SelectTab(window, Tab::Workflow);
+		host.destroyOnWorkflowExecute = window;
+		Expect(QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow) && !IsWindow(window), L"destruction during workflow execution is safe");
+		DestroyWindow(content);
+	}
+
 	void CheckSelection(HWND owner)
 	{
 		const HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -850,6 +1052,7 @@ int wmain(int argc, wchar_t* argv[])
 	Expect(sizeof(void*) == 4, L"x86 Explorer architecture");
 	CheckNavigationAvailability();
 	CheckMenuStates();
+	CheckWorkflowMenus();
 	const HINSTANCE instance = GetModuleHandleW(nullptr);
 	HWND owner = CreateWindowExW(0, L"STATIC", L"Quick Access check owner", WS_OVERLAPPEDWINDOW,
 								  0, 0, 900, 600, nullptr, nullptr, instance, nullptr);
@@ -944,6 +1147,7 @@ int wmain(int argc, wchar_t* argv[])
 	host.destroyOnSearch = searching;
 	Expect(QuickAccess::Search(searching) && !IsWindow(searching), L"ribbon destruction during search is safe");
 	CheckNavigation(owner);
+	CheckWorkflowRibbon(owner);
 	HWND keyboard = QuickAccess::Create(owner, instance, callbacks);
 	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;

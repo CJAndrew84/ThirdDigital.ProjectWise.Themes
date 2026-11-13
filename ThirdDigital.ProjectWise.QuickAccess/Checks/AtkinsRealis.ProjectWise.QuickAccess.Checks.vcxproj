@@ -25,6 +25,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
 	<ClCompile>
+	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
 	  <SDLCheck>true</SDLCheck>
 	  <PreprocessorDefinitions>WIN32;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
 	</ClCompile>
@@ -36,6 +37,7 @@
   <ItemGroup>
 	<ClCompile Include="Checks.cpp" />
 	<ClCompile Include="..\src\QuickAccess.cpp" />
+	<ClCompile Include="..\src\Workflow.cpp" />
 	<Manifest Include="app.manifest" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

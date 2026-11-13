@@ -7,6 +7,9 @@
 
 #include <array>
 #include <cwchar>
+#include <algorithm>
+#include <string>
+#include <vector>
 
 namespace
 {
@@ -28,6 +31,11 @@ namespace
 	LONG g_historyPosition = -2;
 	bool g_historyEnabled = false;
 	bool g_hasParent = false;
+	HMENU g_workflowMenu = nullptr;
+	HDSOURCE g_workflowSource = nullptr;
+	LONG g_workflowFolder = 0;
+	LONG g_workflowId = 0;
+	ULONGLONG g_workflowChecked = 0;
 
 	constexpr UINT kCommands[][3] = {
 		{IDMP_CREATE, 0, 0},
@@ -333,6 +341,131 @@ namespace
 		}
 	}
 
+	struct OwnedMenu
+	{
+		HMENU value = nullptr;
+		~OwnedMenu() { if (value != nullptr) DestroyMenu(value); }
+	};
+	struct OwnedBuffer
+	{
+		HAADMSBUFFER value = nullptr;
+		~OwnedBuffer() { if (value != nullptr) aaApi_DmsDataBufferFree(value); }
+	};
+	struct WorkflowSelection
+	{
+		HWND list = nullptr;
+		HWND control = nullptr;
+		LONG folder = 0;
+		LONG workflow = 0;
+		HDSOURCE source = nullptr;
+		std::wstring key;
+		std::vector<AADOC_ITEM> documents;
+	};
+
+	bool BuildWorkflow(QuickAccess::WorkflowState& result, WorkflowSelection& selection, bool force)
+	{
+		result = {};
+		selection.list = NavigationList();
+		if (!ExplorerControl(selection.list)) return false;
+		selection.source = aaApi_GetActiveDatasource();
+		selection.folder = aaApi_DocListGetProject(selection.list);
+		if (selection.source == nullptr || selection.folder <= 0) return true;
+		selection.control = QuickAccess::SelectionControl(g_frame, aaApi_GetMainDscTree(), selection.list, g_selectionControl);
+		if (selection.control == nullptr) return false;
+		const ULONGLONG now = GetTickCount64();
+		if (force || selection.source != g_workflowSource || selection.folder != g_workflowFolder || now - g_workflowChecked >= 5000)
+		{
+			OwnedBuffer project{aaApi_SelectProjectDataBuffer(selection.folder)};
+			if (project.value == nullptr || aaApi_DmsDataBufferGetCount(project.value) != 1) return false;
+			g_workflowId = aaApi_DmsDataBufferGetNumericProperty(project.value, PROJ_PROP_WORKFLOWID, 0);
+			g_workflowSource = selection.source;
+			g_workflowFolder = selection.folder;
+			g_workflowChecked = now;
+		}
+		selection.workflow = g_workflowId;
+		if (selection.workflow <= 0) return true;
+		const HWND listControl = aaApi_GetDocumentListCtrl(selection.list);
+		if (!IsWindow(listControl)) return false;
+		std::vector<std::wstring> identities;
+		for (int index = ListView_GetNextItem(listControl, -1, LVNI_SELECTED); index != -1; index = ListView_GetNextItem(listControl, index, LVNI_SELECTED))
+		{
+			AADOCLIST_ITEM item{};
+			item.iItem = index;
+			item.ulMask = AADOCITEM_PROJECTNO | AADOCITEM_DOCNO | AADOCITEM_FLAGS | AADOCITEM_VERSIONSEQ;
+			if (!aaApi_DocListGetItem(selection.list, &item)) return false;
+			// A mixed folder/document/non-workflow selection must not operate on an undisclosed subset.
+			if (item.lDocumentId <= 0 || item.lProjectId != selection.folder || (item.ulFlags & AADOCIF_WORKFL) == 0) return true;
+			selection.documents.push_back({item.lProjectId, item.lDocumentId});
+			identities.push_back(std::to_wstring(item.lProjectId) + L":" + std::to_wstring(item.lDocumentId) + L":" +
+				std::to_wstring(item.versionSeq) + L":" + std::to_wstring(item.ulFlags));
+		}
+		std::sort(identities.begin(), identities.end());
+		selection.key = std::to_wstring(reinterpret_cast<UINT_PTR>(selection.source)) + L"/" + std::to_wstring(selection.folder) +
+			L"/" + std::to_wstring(selection.workflow) + L"/" + std::to_wstring(reinterpret_cast<UINT_PTR>(selection.control));
+		for (const auto& identity : identities) selection.key += L"/" + identity;
+		result.visible = true;
+		result.context = selection.key;
+		OwnedMenu menu{CreatePopupMenu()};
+		if (menu.value == nullptr) return false;
+		const HMENU documents = aaApi_InsertMenuByType(AAMENU_DOCUMENT, menu.value, 0);
+		if (documents == nullptr || aaApi_InitMenuByAaControl(selection.list, documents,
+			AAMG_MODIFY | AAMG_WORKFLOW | AAMG_CUSTOMS | AAMG_PROPERTIES | AAMG_VIEW) == 0) return selection.documents.empty();
+		const QuickAccess::WorkflowMenuIds ids{IDMD_CHANGE_NEXT_STATE, IDMD_CHANGE_PREV_STATE, IDMD_STATE, IDMD_SET_FINAL, IDMD_REMOVE_FINAL};
+		if (!QuickAccess::ReadWorkflowMenu(documents, ids, !selection.documents.empty() && selection.control == selection.list, result))
+			return selection.documents.empty();
+		// Preserve the SDK-initialised menu while its extension command IDs are displayed/used.
+		std::swap(g_workflowMenu, menu.value);
+		return true;
+	}
+
+	bool RefreshWorkflowImpl(QuickAccess::WorkflowState& result)
+	{
+		try
+		{
+			WorkflowSelection selection;
+			return BuildWorkflow(result, selection, false);
+		}
+		catch (...) { Report(L"could not read the workflow selection and native menu"); return false; }
+	}
+
+	bool RefreshWorkflow(void*, QuickAccess::WorkflowState& result)
+	{
+		__try { return IsWindowEnabled(g_frame) && RefreshWorkflowImpl(result); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode()))
+		{
+			Report(L"SDK workflow dependency or export unavailable");
+			return false;
+		}
+	}
+
+	bool ExecuteWorkflowImpl(const QuickAccess::WorkflowState& shown, UINT command)
+	{
+		try
+		{
+			WorkflowSelection selection;
+			QuickAccess::WorkflowState current;
+			if (!BuildWorkflow(current, selection, true) || !QuickAccess::CanInvokeWorkflow(shown, current, command) ||
+				selection.documents.empty() || selection.documents.size() > static_cast<std::size_t>(MAXLONG)) return false;
+			SetFocus(selection.list);
+			if (GetFocus() != selection.list && !IsChild(selection.list, GetFocus())) return false;
+			// Native document command dispatch preserves extension callbacks, WRE prompts and audit-comment dialogs.
+			const LONG_PTR outcome = aaApi_ExecuteDocumentCommand(command, static_cast<LONG>(selection.documents.size()), selection.documents.data());
+			g_workflowChecked = 0;
+			return outcome == IDOK || outcome == IDCANCEL;
+		}
+		catch (...) { Report(L"could not dispatch the workflow command"); return false; }
+	}
+
+	bool ExecuteWorkflow(void*, const QuickAccess::WorkflowState& shown, UINT command)
+	{
+		__try { return IsWindowEnabled(g_frame) && ExecuteWorkflowImpl(shown, command); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode()))
+		{
+			Report(L"SDK workflow command dependency or export unavailable");
+			return false;
+		}
+	}
+
 	bool EnsureWindow()
 	{
 		if (IsWindow(g_window)) return true;
@@ -344,7 +477,7 @@ namespace
 				if (target == nullptr) { Report(L"no Explorer selection control is available for keyboard focus"); return false; }
 				SetFocus(target);
 				return GetFocus() == target || IsChild(target, GetFocus());
-			}, RefreshAddress});
+			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow});
 		if (g_window != nullptr && !QuickAccess::Dock(g_window, true))
 			Report(L"Explorer's content pane is not ready for docking; use the toolbar context menu to retry");
 		return g_window != nullptr;

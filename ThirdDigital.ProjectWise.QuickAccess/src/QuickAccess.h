@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <array>
 #include <cstddef>
+#include "Workflow.h"
 
 namespace QuickAccess
 {
@@ -18,7 +19,7 @@ namespace QuickAccess
 	constexpr UINT kFirstNavigation = 210;
 	constexpr std::size_t kNavigationCount = 3;
 
-	enum class Tab { Home, View, Search, Tools };
+	enum class Tab { Home, View, Search, Tools, Workflow };
 	enum class DisplayMode { Expanded, Minimized, Hidden };
 	Tab ButtonTab(std::size_t button) noexcept;
 
@@ -43,6 +44,8 @@ namespace QuickAccess
 		bool (*navigate)(void* context, std::size_t button) = nullptr;
 		bool (*focusContent)(void* context) = nullptr;
 		bool (*refreshAddress)(void* context, HWND address) = nullptr;
+		bool (*refreshWorkflow)(void* context, WorkflowState& workflow) = nullptr;
+		bool (*executeWorkflow)(void* context, const WorkflowState& shown, UINT command) = nullptr;
 	};
 
 	bool ReadMenuState(HMENU menu, UINT command, ButtonState& state) noexcept;
@@ -64,4 +67,5 @@ namespace QuickAccess
 	COLORREF ContrastColour(COLORREF preferred, COLORREF background, double minimum) noexcept;
 	void Refresh(HWND window) noexcept;
 	bool Invoke(HWND window, UINT buttonId) noexcept;
+	bool InvokeWorkflow(HWND window, UINT buttonId) noexcept;
 }

@@ -25,6 +25,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
 	<ClCompile>
+	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
 	  <SDLCheck>true</SDLCheck>
 	  <PreprocessorDefinitions>WIN32;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
 	  <AdditionalIncludeDirectories>$(PWSDKDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -32,16 +33,18 @@
 	<Link>
 	  <SubSystem>Windows</SubSystem>
 	  <ModuleDefinitionFile>src\QuickAccess.def</ModuleDefinitionFile>
-	  <AdditionalDependencies>comctl32.lib;shell32.lib;dmawin.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+	  <AdditionalDependencies>comctl32.lib;shell32.lib;dmawin.lib;dmscli.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
 	  <AdditionalLibraryDirectories>$(PWSDKDir)\lib\Win32;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-	  <DelayLoadDLLs>dmawin.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+	  <DelayLoadDLLs>dmawin.dll;dmscli.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
 	  <GenerateDebugInformation>true</GenerateDebugInformation>
 	</Link>
   </ItemDefinitionGroup>
   <ItemGroup>
 	<ClCompile Include="src\Module.cpp" />
 	<ClCompile Include="src\QuickAccess.cpp" />
+	<ClCompile Include="src\Workflow.cpp" />
 	<ClInclude Include="src\QuickAccess.h" />
+	<ClInclude Include="src\Workflow.h" />
 	<None Include="src\QuickAccess.def" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

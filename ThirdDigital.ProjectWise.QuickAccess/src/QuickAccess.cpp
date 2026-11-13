@@ -21,7 +21,7 @@ namespace QuickAccess
 		constexpr const wchar_t* kLabels[] = {L"New Folder", L"Add Documents", L"Check Out", L"Check In", L"Free", L"Properties", L"Refresh",
 			L"Open", L"New Document", L"Thumbnails", L"Large Icons", L"Small Icons", L"List", L"Details", L"Manage Views", L"Interface",
 			L"Advanced Search", L"Find in Folder", L"Local Documents", L"User Settings", L"Wizard Manager", L"Help Index"};
-		constexpr const wchar_t* kTabs[] = {L"Home", L"View", L"Search", L"Tools"};
+		constexpr const wchar_t* kTabs[] = {L"Home", L"View", L"Search", L"Tools", L"Workflow"};
 		static_assert(ARRAYSIZE(kLabels) == kButtonCount);
 		thread_local HWND g_popup = nullptr;
 
@@ -44,6 +44,8 @@ namespace QuickAccess
 			std::array<HWND, 3> modeButtons{};
 			HWND searchText = nullptr;
 			HWND searchButton = nullptr;
+			WorkflowState workflow;
+			std::vector<HWND> workflowButtons;
 			Tab tab = Tab::Home;
 			DisplayMode mode = DisplayMode::Expanded;
 			DisplayMode restoreMode = DisplayMode::Expanded;
@@ -77,6 +79,19 @@ namespace QuickAccess
 		}
 
 		bool LayoutRibbon(HWND window, WindowState& state) noexcept;
+
+		int WorkflowButton(const WindowState& state, HWND control) noexcept
+		{
+			const auto found = std::find(state.workflowButtons.begin(), state.workflowButtons.end(), control);
+			return found == state.workflowButtons.end() ? -1 : static_cast<int>(found - state.workflowButtons.begin());
+		}
+
+		HWND WorkflowEntry(const WindowState& state) noexcept
+		{
+			for (HWND button : state.workflowButtons)
+				if (IsWindowVisible(button) && IsWindowEnabled(button)) return button;
+			return nullptr;
+		}
 
 		LRESULT CALLBACK KeyboardMessages(int code, WPARAM wParam, LPARAM lParam)
 		{
@@ -181,6 +196,8 @@ namespace QuickAccess
 			const MSAAPROPID properties[] = {PROPID_ACC_NAME, PROPID_ACC_DESCRIPTION, PROPID_ACC_KEYBOARDSHORTCUT};
 			for (const HWND control : controls)
 				if (control != nullptr) state.accessibility->ClearHwndProps(control, static_cast<DWORD>(OBJID_CLIENT), CHILDID_SELF, properties, ARRAYSIZE(properties));
+			for (const HWND control : state.workflowButtons)
+				state.accessibility->ClearHwndProps(control, static_cast<DWORD>(OBJID_CLIENT), CHILDID_SELF, properties, ARRAYSIZE(properties));
 			state.accessibility->Release();
 			state.accessibility = nullptr;
 		}
@@ -201,7 +218,7 @@ namespace QuickAccess
 
 		void RevealControl(WindowState& state, HWND control) noexcept
 		{
-			if (control != state.searchText && control != state.searchButton) return;
+			if (control != state.searchText && control != state.searchButton && WorkflowButton(state, control) < 0) return;
 			RECT item{}, viewport{};
 			GetWindowRect(control, &item);
 			MapWindowPoints(nullptr, state.page, reinterpret_cast<POINT*>(&item), 2);
@@ -380,6 +397,17 @@ namespace QuickAccess
 			case 20:
 				path({{4, 25}, {20, 9}, {25, 14}, {9, 30}, {4, 25}}); line(16, 13, 21, 18);
 				line(8, 3, 8, 11); line(4, 7, 12, 7); line(26, 2, 26, 8); line(23, 5, 29, 5); break;
+			case 22: case 23:
+				line(4, 16, 28, 16);
+				if (command == 22) path({{20, 8}, {28, 16}, {20, 24}});
+				else path({{12, 8}, {4, 16}, {12, 24}});
+				break;
+			case 24:
+				path({{4, 10}, {10, 4}, {22, 4}, {28, 10}}); path({{22, 10}, {28, 10}, {28, 4}});
+				path({{28, 22}, {22, 28}, {10, 28}, {4, 22}}); path({{4, 28}, {4, 22}, {10, 22}}); break;
+			case 25:
+				Rectangle(dc, 3, 11, 12, 21); Rectangle(dc, 21, 3, 30, 12); Rectangle(dc, 21, 21, 30, 30);
+				path({{12, 16}, {17, 16}, {17, 7}, {21, 7}}); path({{17, 16}, {17, 25}, {21, 25}}); break;
 			default:
 				Ellipse(dc, 3, 3, 29, 29);
 				curve({{11, 11}, {11, 5}, {23, 6}, {21, 13}, {20, 16}, {16, 16}, {16, 20}});
@@ -454,6 +482,8 @@ namespace QuickAccess
 
 		LRESULT CALLBACK ButtonProc(HWND button, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data)
 		{
+			if (message == WM_GETDLGCODE && GetDlgCtrlID(button) >= static_cast<int>(kFirstWorkflow))
+				return DefSubclassProc(button, message, wParam, lParam) | DLGC_WANTARROWS;
 			if (message == WM_GETDLGCODE && RibbonKey(static_cast<UINT>(wParam)))
 				return DefSubclassProc(button, message, wParam, lParam) | DLGC_WANTMESSAGE;
 			if (ControlKey(reinterpret_cast<HWND>(data), message, wParam)) return 0;
@@ -468,6 +498,99 @@ namespace QuickAccess
 			return DefSubclassProc(button, message, wParam, lParam);
 		}
 
+		void DestroyWorkflowButtons(WindowState& state, std::vector<HWND>& buttons) noexcept
+		{
+			const MSAAPROPID properties[] = {PROPID_ACC_NAME, PROPID_ACC_DESCRIPTION, PROPID_ACC_KEYBOARDSHORTCUT};
+			for (HWND button : buttons)
+			{
+				if (state.accessibility != nullptr)
+					state.accessibility->ClearHwndProps(button, static_cast<DWORD>(OBJID_CLIENT), CHILDID_SELF, properties, ARRAYSIZE(properties));
+				DestroyWindow(button);
+			}
+			buttons.clear();
+		}
+
+		void ResetWorkflow(WindowState& state) noexcept
+		{
+			if (WorkflowButton(state, GetFocus()) >= 0) FocusControl(state, state.tabs);
+			DestroyWorkflowButtons(state, state.workflowButtons);
+			state.workflow = {};
+			if (state.tab == Tab::Workflow)
+			{
+				DismissPopup(state.window);
+				state.tab = Tab::Home;
+				state.scroll = 0;
+				TabCtrl_SetCurSel(state.tabs, 0);
+				if (state.accessibility != nullptr)
+					Annotate(state, state.toolbar, L"Home commands", L"Use arrow keys to select a command and Enter or Space to run it.");
+			}
+			if (TabCtrl_GetItemCount(state.tabs) == 5) TabCtrl_DeleteItem(state.tabs, 4);
+			LayoutRibbon(state.window, state);
+		}
+
+		bool UpdateWorkflow(WindowState& state, WorkflowState fresh) noexcept
+		{
+			std::vector<HWND> created;
+			try
+			{
+				if (!fresh.visible) fresh = {};
+				if (fresh == state.workflow) return true;
+				if (fresh.actions.size() > kMaxWorkflowActions) return false;
+				const bool rebuild = fresh.visible != state.workflow.visible || fresh.rulesEngine != state.workflow.rulesEngine ||
+					fresh.context != state.workflow.context || fresh.actions.size() != state.workflow.actions.size() ||
+					!std::equal(fresh.actions.begin(), fresh.actions.end(), state.workflow.actions.begin(), [](const auto& a, const auto& b) {
+						return a.command == b.command && a.label == b.label && a.kind == b.kind;
+					});
+				if (rebuild)
+				{
+					created.reserve(fresh.actions.size());
+					const HINSTANCE instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(state.window, GWLP_HINSTANCE));
+					for (std::size_t i = 0; i < fresh.actions.size(); ++i)
+					{
+						HWND button = CreateWindowExW(0, L"BUTTON", fresh.actions[i].label.c_str(), WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
+							0, 0, 0, 0, state.page, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kFirstWorkflow + i)), instance, nullptr);
+						if (button == nullptr) throw std::bad_alloc();
+						created.push_back(button);
+						if (!SetWindowSubclass(button, ButtonProc, 1, reinterpret_cast<DWORD_PTR>(state.window)) ||
+							!Annotate(state, button, fresh.actions[i].label.c_str(), L"ProjectWise workflow action. Use arrows to choose an action; Enter or Space runs it."))
+							throw std::bad_alloc();
+						SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(state.font), FALSE);
+					}
+				}
+				if (fresh.visible && !state.workflow.visible)
+				{
+					TCITEMW item{};
+					item.mask = TCIF_TEXT;
+					item.pszText = const_cast<LPWSTR>(kTabs[4]);
+					if (TabCtrl_InsertItem(state.tabs, 4, &item) == -1) throw std::bad_alloc();
+				}
+				if (rebuild)
+				{
+					if (WorkflowButton(state, GetFocus()) >= 0) FocusControl(state, state.tabs);
+					DestroyWorkflowButtons(state, state.workflowButtons);
+					state.workflowButtons.swap(created);
+				}
+				const bool visible = fresh.visible;
+				state.workflow = std::move(fresh);
+				if (!visible) ResetWorkflow(state);
+				else
+				{
+					for (std::size_t i = 0; i < state.workflowButtons.size(); ++i) EnableWindow(state.workflowButtons[i], state.workflow.actions[i].enabled);
+					LayoutRibbon(state.window, state);
+					const int focused = WorkflowButton(state, GetFocus());
+					if (focused >= 0 && !state.workflow.actions[focused].enabled)
+						if (!FocusControl(state, WorkflowEntry(state))) FocusControl(state, state.tabs);
+				}
+				if (rebuild) NotifyWinEvent(EVENT_OBJECT_REORDER, state.tabs, OBJID_CLIENT, CHILDID_SELF);
+				return true;
+			}
+			catch (...)
+			{
+				DestroyWorkflowButtons(state, created);
+				return false;
+			}
+		}
+
 		void DrawButton(const WindowState& state, const DRAWITEMSTRUCT& draw) noexcept
 		{
 			const bool navigation = draw.CtlID >= kFirstNavigation && draw.CtlID < kFirstNavigation + kNavigationCount;
@@ -480,7 +603,18 @@ namespace QuickAccess
 			const COLORREF background = hot || (draw.itemState & ODS_SELECTED) != 0 ? Blend(GetSysColor(COLOR_HOTLIGHT), face, 18) : face;
 			Fill(draw.hDC, draw.rcItem, background);
 			const COLORREF foreground = ContrastColour(enabled ? text : Blend(text, face, 60), background, 4.5);
-			if (navigation)
+			if (draw.CtlID >= kFirstWorkflow && draw.CtlID - kFirstWorkflow < state.workflow.actions.size())
+			{
+				const auto& action = state.workflow.actions[draw.CtlID - kFirstWorkflow];
+				const int dpi = static_cast<int>(GetDpiForWindow(draw.hwndItem)), icon = MulDiv(32, dpi, 96);
+				Glyph(draw.hDC, 22 + static_cast<std::size_t>(action.kind), (draw.rcItem.right - icon) / 2,
+					draw.rcItem.top + MulDiv(4, dpi, 96), icon, ContrastColour(foreground, background, 3.0));
+				RECT label = draw.rcItem;
+				InflateRect(&label, -MulDiv(6, dpi, 96), -MulDiv(4, dpi, 96));
+				label.top += MulDiv(38, dpi, 96);
+				Text(draw.hDC, state.font, action.label.c_str(), label, foreground, DT_CENTER | DT_WORDBREAK);
+			}
+			else if (navigation)
 			{
 				const int dpi = static_cast<int>(GetDpiForWindow(draw.hwndItem));
 				const int x = (draw.rcItem.left + draw.rcItem.right) / 2, y = (draw.rcItem.top + draw.rcItem.bottom) / 2, d = MulDiv(5, dpi, 96);
@@ -526,7 +660,7 @@ namespace QuickAccess
 			Fill(dc, body, surface);
 			RECT rule{0, header - 1, rect.right, header};
 			Fill(dc, rule, Blend(GetSysColor(COLOR_BTNTEXT), face, 18));
-			for (int i = 0; i < static_cast<int>(ARRAYSIZE(kTabs)); ++i)
+			for (int i = 0; i < TabCtrl_GetItemCount(tabs); ++i)
 			{
 				RECT tab{};
 				TabCtrl_GetItemRect(tabs, i, &tab);
@@ -554,6 +688,14 @@ namespace QuickAccess
 			GetClientRect(page, &client);
 			Fill(dc, client, GetSysColor(COLOR_WINDOW));
 			const int dpi = static_cast<int>(GetDpiForWindow(page));
+			if (state.tab == Tab::Workflow)
+			{
+				RECT caption{0, client.bottom - MulDiv(24, dpi, 96), client.right, client.bottom};
+				Text(dc, state.font, state.workflow.actions.empty() ? L"Select documents to see workflow actions" :
+					state.workflow.rulesEngine ? L"Rules Engine operations" : L"Workflow transitions", caption,
+					ContrastColour(GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_WINDOW), 4.5));
+				return;
+			}
 			RECT toolbar{};
 			GetWindowRect(state.toolbar, &toolbar);
 			MapWindowPoints(nullptr, page, reinterpret_cast<POINT*>(&toolbar), 2);
@@ -753,11 +895,13 @@ namespace QuickAccess
 			const int header = hidden ? 0 : scale(32), grip = state.dockClient != nullptr && !hidden ? scale(12) : 0;
 			const int navigationHeight = state.navigation != nullptr ? scale(44) : 0;
 			const bool commands = !hidden && (state.mode == DisplayMode::Expanded || state.popup);
+			const bool workflow = state.tab == Tab::Workflow;
 			for (std::size_t i = 0; i < kButtonCount; ++i)
 				SendMessageW(state.toolbar, TB_HIDEBUTTON, kFirstButton + i, MAKELPARAM(ButtonTab(i) != state.tab, 0));
 			SendMessageW(state.toolbar, TB_AUTOSIZE, 0, 0);
 			SIZE size{};
 			bool success = SendMessageW(state.toolbar, TB_GETMAXSIZE, 0, reinterpret_cast<LPARAM>(&size)) != 0;
+			if (workflow) size = {scale(160) * static_cast<LONG>(std::max<std::size_t>(1, state.workflowButtons.size())), scale(80)};
 			const bool search = state.tab == Tab::Search;
 			const int contentWidth = size.cx + (search ? scale(420) : 0);
 			const int width = state.dockClient != nullptr ? state.dockRect.right - state.dockRect.left :
@@ -775,7 +919,7 @@ namespace QuickAccess
 			const int tabsWidth = std::max(1, width - grip);
 			const int commandHeight = commands ? size.cy + scale(28) : 0;
 			const int pageTop = header + (state.popup ? navigationHeight : 0);
-			TabCtrl_SetItemSize(state.tabs, std::min(scale(72), std::max(scale(24), (tabsWidth - 3 * modeWidth - scale(4)) / 4)), scale(32));
+			TabCtrl_SetItemSize(state.tabs, std::min(scale(80), std::max(scale(24), (tabsWidth - 3 * modeWidth - scale(4)) / TabCtrl_GetItemCount(state.tabs))), scale(32));
 			success = SetWindowPos(state.tabs, nullptr, grip, 0, tabsWidth, pageTop + commandHeight, SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
 			success = SetWindowPos(state.page, nullptr, scale(4), pageTop, available, commandHeight,
 				SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
@@ -789,7 +933,13 @@ namespace QuickAccess
 			}
 			const int x = -state.scroll;
 			success = SetWindowPos(state.toolbar, nullptr, x, scale(4), size.cx, size.cy, SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
-			ShowWindow(state.toolbar, commands ? SW_SHOWNOACTIVATE : SW_HIDE);
+			ShowWindow(state.toolbar, commands && !workflow ? SW_SHOWNOACTIVATE : SW_HIDE);
+			for (std::size_t i = 0; i < state.workflowButtons.size(); ++i)
+			{
+				success = SetWindowPos(state.workflowButtons[i], nullptr, x + scale(160) * static_cast<int>(i), scale(4), scale(160), scale(80),
+					SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
+				ShowWindow(state.workflowButtons[i], commands && workflow ? SW_SHOWNOACTIVATE : SW_HIDE);
+			}
 			success = SetWindowPos(state.searchText, nullptr, x + size.cx + scale(12), scale(20), scale(280), scale(28),
 				SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
 			success = SetWindowPos(state.searchButton, nullptr, x + size.cx + scale(300), scale(20), scale(112), scale(28),
@@ -885,6 +1035,7 @@ namespace QuickAccess
 			}
 			for (HWND button : state.navigationButtons)
 				if (button != nullptr) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+			for (HWND button : state.workflowButtons) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
 			if (state.images != nullptr) ImageList_Destroy(state.images);
 			if (state.font != nullptr) DeleteObject(state.font);
 			state.images = images;
@@ -905,7 +1056,7 @@ namespace QuickAccess
 			state.page = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"Ribbon commands", WS_CHILD | WS_CLIPCHILDREN,
 				0, 0, 0, 0, state.tabs, reinterpret_cast<HMENU>(kCommandPage), instance, nullptr);
 			if (state.page == nullptr || !SetWindowSubclass(state.page, PanelProc, 1, reinterpret_cast<DWORD_PTR>(window))) return false;
-			for (int i = 0; i < static_cast<int>(ARRAYSIZE(kTabs)); ++i)
+			for (int i = 0; i < 4; ++i)
 			{
 				TCITEMW item{};
 				item.mask = TCIF_TEXT;
@@ -1115,6 +1266,12 @@ namespace QuickAccess
 				}
 				return 0;
 			case WM_COMMAND:
+				if (LOWORD(wParam) >= kFirstWorkflow && LOWORD(wParam) < kFirstWorkflow + kMaxWorkflowActions &&
+					state != nullptr && WorkflowButton(*state, reinterpret_cast<HWND>(lParam)) == static_cast<int>(LOWORD(wParam) - kFirstWorkflow))
+				{
+					InvokeWorkflow(window, LOWORD(wParam));
+					return 0;
+				}
 				if (LOWORD(wParam) >= kFirstNavigation && LOWORD(wParam) < kFirstNavigation + kNavigationCount)
 				{
 					if (!Navigate(window, LOWORD(wParam))) MessageBoxW(window, L"Navigation is unavailable for the current ProjectWise location. See the debug output for details.",
@@ -1257,7 +1414,8 @@ namespace QuickAccess
 		if (focus == state->tabs && (key == VK_LEFT || key == VK_RIGHT || key == VK_HOME || key == VK_END))
 		{
 			const int current = static_cast<int>(state->tab);
-			const int next = key == VK_HOME ? 0 : key == VK_END ? 3 : (current + (key == VK_LEFT ? 3 : 1)) % 4;
+			const int count = TabCtrl_GetItemCount(state->tabs);
+			const int next = key == VK_HOME ? 0 : key == VK_END ? count - 1 : (current + (key == VK_LEFT ? count - 1 : 1)) % count;
 			return SelectTab(window, static_cast<Tab>(next));
 		}
 		if (focus == state->tabs && (key == VK_RETURN || key == VK_SPACE || key == VK_DOWN))
@@ -1265,7 +1423,16 @@ namespace QuickAccess
 			if (!SelectTab(window, state->tab)) return false;
 			state = State(window);
 			if (state == nullptr) return true;
-			if (!FocusControl(*state, state->toolbar)) FocusControl(*state, state->searchText);
+			if (!FocusControl(*state, state->tab == Tab::Workflow ? WorkflowEntry(*state) : state->toolbar)) FocusControl(*state, state->searchText);
+			return true;
+		}
+		const int workflowFocus = WorkflowButton(*state, focus);
+		if (workflowFocus >= 0 && (key == VK_LEFT || key == VK_RIGHT || key == VK_HOME || key == VK_END))
+		{
+			const int count = static_cast<int>(state->workflowButtons.size()), direction = key == VK_LEFT || key == VK_END ? -1 : 1;
+			const int current = key == VK_HOME ? -1 : key == VK_END ? count : workflowFocus;
+			for (int i = current + direction; i >= 0 && i < count; i += direction)
+				if (FocusControl(*state, state->workflowButtons[i])) break;
 			return true;
 		}
 		if (focus == state->toolbar && (key == VK_LEFT || key == VK_RIGHT || key == VK_HOME || key == VK_END))
@@ -1307,7 +1474,7 @@ namespace QuickAccess
 				SendMessageW(window, WM_COMMAND, MAKEWPARAM(kSearch, BN_CLICKED), reinterpret_cast<LPARAM>(state->searchButton));
 				return true;
 			}
-			if (focus == state->searchButton ||
+			if (focus == state->searchButton || workflowFocus >= 0 ||
 				std::find(state->modeButtons.begin(), state->modeButtons.end(), focus) != state->modeButtons.end() ||
 				std::find(state->navigationButtons.begin(), state->navigationButtons.end(), focus) != state->navigationButtons.end())
 			{
@@ -1316,11 +1483,13 @@ namespace QuickAccess
 			}
 		}
 		if (key != VK_TAB || control || alt) return false;
-		const HWND targets[] = {state->tabs, state->modeButtons[0], state->modeButtons[1], state->modeButtons[2], state->toolbar,
+		const HWND targets[] = {state->tabs, state->modeButtons[0], state->modeButtons[1], state->modeButtons[2],
+			state->tab == Tab::Workflow ? WorkflowEntry(*state) : state->toolbar,
 			state->searchText, state->searchButton, state->navigationButtons[0], state->navigationButtons[1], state->navigationButtons[2], state->address};
 		int current = -1;
 		for (int i = 0; i < static_cast<int>(ARRAYSIZE(targets)); ++i)
 			if (targets[i] != nullptr && (focus == targets[i] || IsChild(targets[i], focus))) current = i;
+		if (workflowFocus >= 0) current = 4;
 		const int direction = shift ? -1 : 1;
 		for (int i = current + direction; i >= 0 && i < static_cast<int>(ARRAYSIZE(targets)); i += direction)
 			if (targets[i] != nullptr && FocusControl(*state, targets[i])) return true;
@@ -1406,7 +1575,7 @@ namespace QuickAccess
 	bool SelectTab(HWND window, Tab tab, bool reveal) noexcept
 	{
 		auto* state = State(window);
-		if (state == nullptr || static_cast<unsigned>(tab) >= ARRAYSIZE(kTabs))
+		if (state == nullptr || static_cast<unsigned>(tab) >= ARRAYSIZE(kTabs) || (tab == Tab::Workflow && !state->workflow.visible))
 		{
 			Trace(L"invalid ribbon window or tab");
 			return false;
@@ -1620,6 +1789,23 @@ namespace QuickAccess
 			if (State(window) != state) return;
 			EnableWindow(state->address, addressReady);
 		}
+		if (state->host.refreshWorkflow != nullptr)
+		{
+			try
+			{
+				WorkflowState workflow;
+				const bool ready = IsWindowEnabled(state->owner) && state->host.refreshWorkflow(state->host.context, workflow);
+				if (State(window) != state) return;
+				if (!ready) workflow = {};
+				if (!UpdateWorkflow(*state, std::move(workflow))) { Trace(L"could not update workflow commands"); ResetWorkflow(*state); }
+			}
+			catch (...)
+			{
+				if (State(window) != state) return;
+				Trace(L"workflow refresh failed");
+				ResetWorkflow(*state);
+			}
+		}
 		state->busy = false;
 		if (GetFocus() == state->toolbar && (state->focusedCommand < 0 ||
 			SendMessageW(state->toolbar, TB_ISBUTTONENABLED, kFirstButton + state->focusedCommand, 0) == 0))
@@ -1675,5 +1861,35 @@ namespace QuickAccess
 		DismissPopup(window);
 		Refresh(window);
 		return executed;
+	}
+
+	bool InvokeWorkflow(HWND window, UINT buttonId) noexcept
+	{
+		auto* state = State(window);
+		if (state == nullptr || state->busy || !IsWindowEnabled(state->owner) || state->tab != Tab::Workflow ||
+			state->mode == DisplayMode::Hidden || (state->mode == DisplayMode::Minimized && !state->popup) ||
+			buttonId < kFirstWorkflow || buttonId - kFirstWorkflow >= state->workflow.actions.size() ||
+			state->host.refreshWorkflow == nullptr || state->host.executeWorkflow == nullptr) return false;
+		try
+		{
+			const WorkflowState shown = state->workflow;
+			const UINT command = shown.actions[buttonId - kFirstWorkflow].command;
+			state->busy = true;
+			WorkflowState current;
+			const bool ready = state->host.refreshWorkflow(state->host.context, current);
+			if (State(window) != state) return false;
+			const bool result = ready && CanInvokeWorkflow(shown, current, command) && state->host.executeWorkflow(state->host.context, shown, command);
+			if (State(window) != state) return result;
+			state->busy = false;
+			DismissPopup(window);
+			Refresh(window);
+			return result;
+		}
+		catch (...)
+		{
+			if (State(window) == state) { state->busy = false; ResetWorkflow(*state); }
+			Trace(L"workflow operation could not be dispatched");
+			return false;
+		}
 	}
 }
