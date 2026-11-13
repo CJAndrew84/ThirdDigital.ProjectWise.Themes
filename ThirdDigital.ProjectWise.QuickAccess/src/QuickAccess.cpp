@@ -1335,6 +1335,12 @@ namespace QuickAccess
 		return Tab::Tools;
 	}
 
+	NavigationStates NavigationAvailability(bool historyEnabled, LONG count, LONG position, bool hasParent) noexcept
+	{
+		const bool validHistory = historyEnabled && count > 0 && position >= 0 && position < count;
+		return {{{validHistory && position > 0, false}, {validHistory && position < count - 1, false}, {hasParent, false}}};
+	}
+
 	DisplayMode GetDisplayMode(HWND window) noexcept
 	{
 		const auto* state = State(window);
@@ -1609,7 +1615,10 @@ namespace QuickAccess
 			if (State(window) != state) return;
 			for (std::size_t i = 0; i < navigation.size(); ++i)
 				EnableWindow(state->navigationButtons[i], ready && navigation[i].enabled && state->host.navigate != nullptr);
-			EnableWindow(state->address, ready);
+			const bool addressReady = state->host.refreshAddress != nullptr ? IsWindowEnabled(state->owner) &&
+				state->host.refreshAddress(state->host.context, state->address) : ready;
+			if (State(window) != state) return;
+			EnableWindow(state->address, addressReady);
 		}
 		state->busy = false;
 		if (GetFocus() == state->toolbar && (state->focusedCommand < 0 ||

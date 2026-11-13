@@ -30,6 +30,7 @@ namespace QuickAccess
 
 	using States = std::array<ButtonState, kButtonCount>;
 	using NavigationStates = std::array<ButtonState, kNavigationCount>;
+	NavigationStates NavigationAvailability(bool historyEnabled, LONG count, LONG position, bool hasParent) noexcept;
 
 	struct Host
 	{
@@ -41,6 +42,7 @@ namespace QuickAccess
 		bool (*refreshNavigation)(void* context, HWND address, NavigationStates& states) = nullptr;
 		bool (*navigate)(void* context, std::size_t button) = nullptr;
 		bool (*focusContent)(void* context) = nullptr;
+		bool (*refreshAddress)(void* context, HWND address) = nullptr;
 	};
 
 	bool ReadMenuState(HMENU menu, UINT command, ButtonState& state) noexcept;

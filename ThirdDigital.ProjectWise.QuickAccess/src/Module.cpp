@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <commctrl.h>
 #include <aawindms.h>
 #include <delayimp.h>
 
@@ -20,10 +21,13 @@ namespace
 	LONG g_initialised = 0;
 	bool g_menuError = false;
 	std::array<UINT, QuickAccess::kButtonCount> g_commands{};
-	QuickAccess::NavigationStates g_navigationStates{};
 	HWND g_navigationTree = nullptr;
 	HWND g_navigationList = nullptr;
-	constexpr UINT kNavigationCommands[] = {IDM_NAVIGATE_BCK, IDM_NAVIGATE_FWD, IDM_BROWSEUP};
+	bool g_addressError = false;
+	LONG g_historyCount = -2;
+	LONG g_historyPosition = -2;
+	bool g_historyEnabled = false;
+	bool g_hasParent = false;
 
 	constexpr UINT kCommands[][3] = {
 		{IDMP_CREATE, 0, 0},
@@ -69,7 +73,6 @@ namespace
 	{
 		states = {};
 		g_commands.fill(0);
-		g_navigationStates = {};
 		if (!IsWindow(g_frame) || !IsWindowEnabled(g_frame)) return false;
 		const HWND tree = aaApi_GetMainDscTree();
 		const HWND list = aaApi_GetActiveDocumentList();
@@ -92,12 +95,6 @@ namespace
 				if (commands == nullptr ||
 					aaApi_InitMenuByAaControl(control, commands, AAMG_MODIFY | AAMG_PROPERTIES | AAMG_VIEW) == 0) continue;
 				initialised = true;
-				for (std::size_t i = 0; i < g_navigationStates.size(); ++i)
-				{
-					QuickAccess::ButtonState candidate{};
-					if (QuickAccess::ReadMenuState(commands, kNavigationCommands[i], candidate) && candidate.enabled)
-						g_navigationStates[i] = candidate;
-				}
 				for (std::size_t i = 0; i < states.size(); ++i)
 				{
 					for (const UINT command : kCommands[i])
@@ -134,6 +131,8 @@ namespace
 		{
 			g_navigationTree = nullptr;
 			g_navigationList = nullptr;
+			g_addressError = false;
+			g_historyCount = g_historyPosition = -2;
 			const HWND address = aaApi_CreateAddressBar(parent, 0, 0, 600, 240, 0);
 			if (address == nullptr) Report(L"could not create the ribbon's native ProjectWise address bar");
 			else ShowWindow(address, SW_SHOWNOACTIVATE);
@@ -146,20 +145,72 @@ namespace
 		}
 	}
 
-	bool RefreshNavigation(void* context, HWND address, QuickAccess::NavigationStates& states)
+	bool ExplorerControl(HWND control) noexcept
+	{
+		return IsWindow(control) && IsChild(g_frame, control) && GetWindowThreadProcessId(control, nullptr) == GetCurrentThreadId();
+	}
+
+	HWND NavigationList()
+	{
+		const HWND active = aaApi_GetActiveDocumentList();
+		if (ExplorerControl(active)) return active;
+		const HWND main = aaApi_GetMainDocumentList();
+		return ExplorerControl(main) ? main : nullptr;
+	}
+
+	HTREEITEM ParentTreeItem(HWND tree) noexcept
+	{
+		if (!ExplorerControl(tree)) return nullptr;
+		const HTREEITEM selected = TreeView_GetSelection(tree);
+		return selected != nullptr ? TreeView_GetParent(tree, selected) : nullptr;
+	}
+
+	bool RefreshNavigation(void*, HWND, QuickAccess::NavigationStates& states)
 	{
 		states = {};
 		__try
 		{
+			if (!IsWindow(g_frame) || !IsWindowEnabled(g_frame)) return false;
+			const HWND tree = aaApi_GetMainDscTree(), list = NavigationList();
+			const bool enabled = ExplorerControl(list) && aaApi_DocListIsNavigatorEnabled(list) != FALSE;
+			const LONG count = enabled ? aaApi_DocListNavigatorGetCount(list) : -1;
+			const LONG position = enabled ? aaApi_DocListNavigatorGetCurrentPos(list) : -1;
+			const bool hasParent = ParentTreeItem(tree) != nullptr;
+			states = QuickAccess::NavigationAvailability(enabled, count, position, hasParent);
+			if (count != g_historyCount || position != g_historyPosition || enabled != g_historyEnabled || hasParent != g_hasParent)
+			{
+				wchar_t message[200]{};
+				swprintf_s(message, L"navigation history enabled=%d count=%ld position=%ld; Back=%d Forward=%d Up=%d",
+					enabled, count, position, states[0].enabled, states[1].enabled, states[2].enabled);
+				Report(message);
+				g_historyEnabled = enabled;
+				g_historyCount = count;
+				g_historyPosition = position;
+				g_hasParent = hasParent;
+			}
+			return ExplorerControl(tree) || ExplorerControl(list);
+		}
+		__except (SdkLoadExceptionFilter(GetExceptionCode()))
+		{
+			Report(L"SDK document-list navigator dependency or export unavailable");
+			return false;
+		}
+	}
+
+	bool RefreshAddress(void*, HWND address)
+	{
+		__try
+		{
 			if (!IsWindow(g_frame) || !IsWindowEnabled(g_frame) || !IsWindow(address)) return false;
-			const HWND tree = aaApi_GetMainDscTree(), list = aaApi_GetActiveDocumentList();
+			const HWND tree = aaApi_GetMainDscTree(), list = NavigationList();
 			for (const HWND control : {tree, list})
 			{
 				HWND& registered = control == tree ? g_navigationTree : g_navigationList;
 				if (!IsWindow(control) || registered == control) continue;
 				if (!aaApi_AddAddressBarSynchronization(address, control))
 				{
-					Report(L"could not synchronize the ribbon address bar with Explorer's tree/document list");
+					if (!g_addressError) Report(L"could not synchronize the ribbon address bar; Back/Forward/Up remain independent");
+					g_addressError = true;
 					return false;
 				}
 				registered = control;
@@ -175,34 +226,54 @@ namespace
 					const HMONIKER moniker = aaApi_GetAddressBarMoniker(mainAddress);
 					if (moniker != nullptr && !aaApi_SetAddressBarMoniker(address, moniker))
 					{
-						Report(L"could not update the ribbon address from Explorer's current location");
+						if (!g_addressError) Report(L"could not update the ribbon address from Explorer's current location");
+						g_addressError = true;
 						return false;
 					}
 				}
 			}
-			QuickAccess::States commands{};
-			RefreshGuarded(context, commands);
-			states = g_navigationStates;
-			for (std::size_t i = 0; i < states.size(); ++i)
-			{
-				QuickAccess::ButtonState native{};
-				if (QuickAccess::ReadMenuState(GetMenu(g_frame), kNavigationCommands[i], native)) states[i] = native;
-			}
-			return IsWindow(tree) || IsWindow(list);
+			g_addressError = false;
+			return ExplorerControl(tree) || ExplorerControl(list);
 		}
 		__except (SdkLoadExceptionFilter(GetExceptionCode()))
 		{
-			Report(L"SDK navigation dependency or export unavailable");
+			if (!g_addressError) Report(L"SDK address dependency or export unavailable");
+			g_addressError = true;
 			return false;
 		}
 	}
 
 	bool Navigate(void*, std::size_t button)
 	{
-		if (button >= ARRAYSIZE(kNavigationCommands) || !IsWindowEnabled(g_frame)) return false;
-		if (IsWindow(g_selectionControl)) SetFocus(g_selectionControl);
-		SendMessageW(g_frame, WM_COMMAND, MAKEWPARAM(kNavigationCommands[button], 0), 0);
-		return true;
+		if (button >= QuickAccess::kNavigationCount || !IsWindowEnabled(g_frame)) return false;
+		__try
+		{
+			QuickAccess::NavigationStates states{};
+			if (!RefreshNavigation(nullptr, nullptr, states) || !states[button].enabled) return false;
+			if (button < 2)
+			{
+				const HWND list = NavigationList();
+				if (!ExplorerControl(list)) return false;
+				SetFocus(list);
+				if (GetFocus() != list && !IsChild(list, GetFocus())) return false;
+				// autoSelect=TRUE lets the SDK apply the history item to its document-list controls.
+				const auto* item = button == 0 ? aaApi_DocListNavigatorMoveBack(list, TRUE, 1, nullptr) :
+					aaApi_DocListNavigatorMoveForward(list, TRUE, 1, nullptr);
+				return item != nullptr;
+			}
+			const HWND tree = aaApi_GetMainDscTree();
+			const HTREEITEM parent = ParentTreeItem(tree);
+			if (parent == nullptr) return false;
+			SetFocus(tree);
+			if (GetFocus() != tree && !IsChild(tree, GetFocus())) return false;
+			// The SDK explicitly requires this selector instead of TreeView_SelectItem for a DSC tree.
+			return aaApi_DscTreeSelectHTreeItem(tree, parent) != FALSE;
+		}
+		__except (SdkLoadExceptionFilter(GetExceptionCode()))
+		{
+			Report(L"SDK navigation dependency or export unavailable");
+			return false;
+		}
 	}
 
 	bool RefreshGuarded(void* context, QuickAccess::States& states)
@@ -273,7 +344,7 @@ namespace
 				if (target == nullptr) { Report(L"no Explorer selection control is available for keyboard focus"); return false; }
 				SetFocus(target);
 				return GetFocus() == target || IsChild(target, GetFocus());
-			}});
+			}, RefreshAddress});
 		if (g_window != nullptr && !QuickAccess::Dock(g_window, true))
 			Report(L"Explorer's content pane is not ready for docking; use the toolbar context menu to retry");
 		return g_window != nullptr;

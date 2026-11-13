@@ -37,11 +37,13 @@ namespace
 		bool searchSucceeds = true;
 		HWND destroyOnSearch = nullptr;
 		bool navigationAvailable = true;
+		bool addressAvailable = true;
 		QuickAccess::NavigationStates navigationStates{{{true, false}, {true, false}, {true, false}}};
 		unsigned navigations = 0;
 		std::size_t lastNavigation = QuickAccess::kNavigationCount;
 		HWND destroyOnNavigationRefresh = nullptr;
 		HWND destroyOnNavigate = nullptr;
+		HWND destroyOnAddressRefresh = nullptr;
 
 		static bool Refresh(void* context, QuickAccess::States& result)
 		{
@@ -117,7 +119,42 @@ namespace
 			}
 			return host.executeSucceeds;
 		}
+
+		static bool RefreshAddress(void* context, HWND)
+		{
+			auto& host = *static_cast<FakeHost*>(context);
+			if (host.destroyOnAddressRefresh != nullptr)
+			{
+				const HWND window = host.destroyOnAddressRefresh;
+				host.destroyOnAddressRefresh = nullptr;
+				DestroyWindow(window);
+			}
+			return host.addressAvailable;
+		}
 	};
+
+	void CheckNavigationAvailability()
+	{
+		struct Case { bool enabled; LONG count, position; bool parent; std::array<bool, 3> expected; const wchar_t* name; };
+		const Case cases[] = {
+			{false, 3, 1, true, {false, false, true}, L"Up is available even when document-list history is disabled"},
+			{true, 0, -1, false, {false, false, false}, L"empty history at the root disables all navigation"},
+			{true, 1, 0, true, {false, false, true}, L"one location has no Back or Forward history"},
+			{true, 3, 0, true, {false, true, true}, L"first history entry allows Forward but not Back"},
+			{true, 3, 1, true, {true, true, true}, L"middle history entry allows both directions"},
+			{true, 3, 2, true, {true, false, true}, L"last history entry allows Back but not Forward"},
+			{true, 3, 1, false, {true, true, false}, L"a root location disables Up independently of history"},
+			{true, -1, 0, true, {false, false, true}, L"failed history-count query does not disable Up"},
+			{true, 3, -1, true, {false, false, true}, L"failed position query does not guess history availability"},
+			{true, 3, 3, true, {false, false, true}, L"out-of-range history position blocks Back and Forward"},
+			{true, MAXLONG, MAXLONG - 1, true, {true, false, true}, L"history bounds do not overflow at the maximum LONG value"}
+		};
+		for (const auto& test : cases)
+		{
+			const auto states = QuickAccess::NavigationAvailability(test.enabled, test.count, test.position, test.parent);
+			Expect(states[0].enabled == test.expected[0] && states[1].enabled == test.expected[1] && states[2].enabled == test.expected[2], test.name);
+		}
+	}
 
 	void CheckMenuStates()
 	{
@@ -689,7 +726,7 @@ namespace
 		for (auto& state : host.states) state = {true, false};
 		const HINSTANCE instance = GetModuleHandleW(nullptr);
 		const QuickAccess::Host callbacks{&host, FakeHost::Refresh, FakeHost::Execute, FakeHost::Search,
-			FakeHost::CreateAddress, FakeHost::RefreshNavigation, FakeHost::Navigate};
+			FakeHost::CreateAddress, FakeHost::RefreshNavigation, FakeHost::Navigate, nullptr, FakeHost::RefreshAddress};
 		HWND content = CreateWindowExW(0, L"STATIC", L"Navigation test content", WS_CHILD | WS_VISIBLE,
 			0, 40, 1000, 600, owner, reinterpret_cast<HMENU>(0xE900), instance, nullptr);
 		HWND window = QuickAccess::Create(owner, instance, callbacks);
@@ -746,11 +783,19 @@ namespace
 		host.navigationStates[0].enabled = true;
 		host.navigationAvailable = false;
 		QuickAccess::Refresh(window);
-		Expect(!IsWindowEnabled(address) && !QuickAccess::Navigate(window, QuickAccess::kFirstNavigation) && host.navigations == before,
-			L"navigation host failure disables the address control and blocks dispatch");
+		Expect(IsWindowEnabled(address) && !IsWindowEnabled(GetDlgItem(navigation, QuickAccess::kFirstNavigation)) &&
+			!QuickAccess::Navigate(window, QuickAccess::kFirstNavigation) && host.navigations == before,
+			L"unavailable history blocks navigation without disabling a healthy address control");
 		host.navigationAvailable = true;
+		host.addressAvailable = false;
+		QuickAccess::Refresh(window);
+		Expect(!IsWindowEnabled(address) && IsWindowEnabled(GetDlgItem(navigation, QuickAccess::kFirstNavigation)) &&
+			QuickAccess::Navigate(window, QuickAccess::kFirstNavigation) && host.navigations == before + 1,
+			L"address synchronization failure does not disable or block Back/Forward/Up");
+		host.addressAvailable = true;
+		const unsigned beforeModal = host.navigations;
 		EnableWindow(owner, FALSE);
-		Expect(!QuickAccess::Navigate(window, QuickAccess::kFirstNavigation) && host.navigations == before, L"modal Explorer blocks navigation");
+		Expect(!QuickAccess::Navigate(window, QuickAccess::kFirstNavigation) && host.navigations == beforeModal, L"modal Explorer blocks navigation");
 		EnableWindow(owner, TRUE);
 		QuickAccess::SetDisplayMode(window, DisplayMode::Expanded);
 		RECT resized{};
@@ -767,6 +812,10 @@ namespace
 		window = QuickAccess::Create(owner, instance, callbacks);
 		host.destroyOnNavigate = window;
 		Expect(QuickAccess::Navigate(window, QuickAccess::kFirstNavigation) && !IsWindow(window), L"destruction during navigation execution is safe");
+		window = QuickAccess::Create(owner, instance, callbacks);
+		host.destroyOnAddressRefresh = window;
+		QuickAccess::Refresh(window);
+		Expect(!IsWindow(window), L"destruction during independent address refresh is safe");
 		DestroyWindow(content);
 	}
 
@@ -799,6 +848,7 @@ namespace
 int wmain(int argc, wchar_t* argv[])
 {
 	Expect(sizeof(void*) == 4, L"x86 Explorer architecture");
+	CheckNavigationAvailability();
 	CheckMenuStates();
 	const HINSTANCE instance = GetModuleHandleW(nullptr);
 	HWND owner = CreateWindowExW(0, L"STATIC", L"Quick Access check owner", WS_OVERLAPPEDWINDOW,
