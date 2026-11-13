@@ -102,12 +102,15 @@ namespace QuickAccess
 					{
 						if (message.hwnd != state->window && !IsChild(state->window, message.hwnd) &&
 							message.hwnd != state->owner && !IsChild(state->owner, message.hwnd)) continue;
+						// SDK commands may enter a modal message loop before HandleKey returns.
+						const bool previouslyConsumed = key < g_consumedKeys.size() && g_consumedKeys[key];
+						if (key < g_consumedKeys.size()) g_consumedKeys[key] = true;
 						if (HandleKey(state->window, static_cast<UINT>(message.wParam), (GetKeyState(VK_SHIFT) & 0x8000) != 0,
 							(GetKeyState(VK_CONTROL) & 0x8000) != 0, (GetKeyState(VK_MENU) & 0x8000) != 0))
 						{
-							if (key < g_consumedKeys.size()) g_consumedKeys[key] = true;
 							message.message = WM_NULL;
 						}
+						else if (key < g_consumedKeys.size()) g_consumedKeys[key] = previouslyConsumed;
 						break;
 					}
 				}

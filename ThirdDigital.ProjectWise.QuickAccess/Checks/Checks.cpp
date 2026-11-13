@@ -29,6 +29,8 @@ namespace
 		unsigned executions = 0;
 		std::size_t last = QuickAccess::kButtonCount;
 		HWND focusOnExecute = nullptr;
+		HWND nestedRepeatTarget = nullptr;
+		bool nestedRepeatConsumed = false;
 		HWND destroyOnRefresh = nullptr;
 		unsigned searches = 0;
 		std::wstring query;
@@ -60,6 +62,12 @@ namespace
 			++host.executions;
 			host.last = button;
 			if (IsWindow(host.focusOnExecute)) SetFocus(host.focusOnExecute);
+			if (IsWindow(host.nestedRepeatTarget))
+			{
+				PostMessageW(host.nestedRepeatTarget, WM_KEYDOWN, VK_RETURN, 1L << 30);
+				MSG repeat{};
+				host.nestedRepeatConsumed = PeekMessageW(&repeat, host.nestedRepeatTarget, WM_KEYDOWN, WM_KEYDOWN, PM_REMOVE) && repeat.message == WM_NULL;
+			}
 			return host.executeSucceeds;
 		}
 
@@ -409,12 +417,15 @@ namespace
 			SendMessageW(toolbar, TB_GETHOTITEM, 0, 0) == 8, L"pointer exit cannot erase the keyboard focus target");
 		const unsigned beforeRepeat = host.executions;
 		host.focusOnExecute = content;
+		host.nestedRepeatTarget = content;
 		Expect(QueuedKey(toolbar, VK_RETURN) && host.executions == beforeRepeat + 1 && host.last == 8 && GetFocus() == content,
 			L"queued Enter executes the focused command once and permits Explorer to take focus");
+		Expect(host.nestedRepeatConsumed, L"held Enter is already suppressed while a synchronous host command pumps nested messages");
 		Expect(QueuedKey(content, VK_RETURN, WM_KEYDOWN, 1L << 30) && host.executions == beforeRepeat + 1,
 			L"holding Enter after command dispatch does not repeat the action or leak to Explorer");
 		QueuedKey(content, VK_RETURN, WM_KEYUP);
 		host.focusOnExecute = nullptr;
+		host.nestedRepeatTarget = nullptr;
 		SetFocus(tabs);
 		Expect(!QuickAccess::HandleKey(window, VK_F6, false, true) && GetFocus() == tabs,
 			L"Ctrl+F6 remains an Explorer accelerator, not ribbon traversal");
