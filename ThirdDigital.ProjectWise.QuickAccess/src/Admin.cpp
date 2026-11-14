@@ -7,13 +7,38 @@
 
 namespace QuickAccess
 {
-	ContextState AdminContext(std::wstring context, bool administrator, bool restrictedAdministrator, bool administrativeSession)
+	ContextState AdminContext(std::wstring context, bool administrator, bool restrictedAdministrator)
 	{
 		if (context.empty() || (!administrator && !restrictedAdministrator)) return {};
 		return {true, false, std::move(context), {
-			{static_cast<UINT>(AdminCommand::NewUser), L"New User", administrativeSession, ContextActionKind::NewUser},
-			{static_cast<UINT>(AdminCommand::Users), L"Users and Groups", true, ContextActionKind::Users},
-			{static_cast<UINT>(AdminCommand::SignIn), L"Administrative Sign-in", !administrativeSession, ContextActionKind::SignIn}}};
+			{static_cast<UINT>(AdminCommand::NewUser), L"New User", true, ContextActionKind::NewUser},
+			{static_cast<UINT>(AdminCommand::Users), L"Users and Groups", true, ContextActionKind::Users}}};
+	}
+
+	AdminAccess EnsureAdminSession(const AdminSessionHost& host, const ContextState& shown, UINT command, ContextState& ready, std::wstring& error)
+	{
+		ready = {}; error.clear();
+		try
+		{
+			AdminSession current;
+			if ((command != static_cast<UINT>(AdminCommand::NewUser) && command != static_cast<UINT>(AdminCommand::Users)) ||
+				host.read == nullptr || !host.read(host.context, current) || !CanInvokeWorkflow(shown, current.commands, command))
+			{ error = L"The datasource, user or administrative permissions changed. Reopen the Admin command."; return AdminAccess::Failed; }
+			if (!current.administrative)
+			{
+				if (host.login == nullptr) { error = L"Administrative sign-in is unavailable."; return AdminAccess::Failed; }
+				const auto result = host.login(host.context, current.commands, error);
+				if (result == AdminAccess::Cancelled)
+				{ error = L"Administrative sign-in was cancelled. No administrative action was performed."; return result; }
+				if (result != AdminAccess::Ready)
+				{ if (error.empty()) error = L"ProjectWise did not establish administrative access for the current datasource."; return AdminAccess::Failed; }
+			}
+			// Refresh even for an existing administrative session; login callbacks may change datasource, user or role.
+			if (!host.read(host.context, current) || !current.administrative || !CanInvokeWorkflow(shown, current.commands, command))
+			{ error = L"Administrative access could not be verified for the original datasource and user. Reopen the Admin command."; return AdminAccess::Failed; }
+			ready = std::move(current.commands); return AdminAccess::Ready;
+		}
+		catch (...) { error = L"Administrative access could not be established."; return AdminAccess::Failed; }
 	}
 
 	void NewUser::ClearCredentials() noexcept

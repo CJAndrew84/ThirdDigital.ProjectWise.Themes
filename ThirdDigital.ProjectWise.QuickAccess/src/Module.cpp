@@ -667,19 +667,85 @@ namespace
 		return std::any_of(menu.actions.begin(), menu.actions.end(), [&](const auto& action) { return action.command == command; });
 	}
 
-	bool BuildAdmin(QuickAccess::ContextState& result)
+	bool BuildAdmin(QuickAccess::ContextState& result, bool* administrative = nullptr)
 	{
 		result = {};
+		if (administrative != nullptr) *administrative = false;
 		const HDSOURCE source = aaApi_GetActiveDatasource();
 		if (source == nullptr) return true;
 		const LONG user = aaApi_GetCurrentUserId();
+		if (user <= 0) return false;
 		const bool administrator = aaApi_IsCurrentUserAdmin() != FALSE;
 		const bool restricted = aaApi_IsUserRestrictedAdmin(0) != FALSE;
 		const bool setup = aaApi_HasAdminSetup() != FALSE;
+		wchar_t datasource[1024]{};
+		if (!aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource))) return false;
+		// The expected change from an ordinary to an administrative connection does not change the identity key.
 		const std::wstring context = std::to_wstring(reinterpret_cast<UINT_PTR>(source)) + L"/" + std::to_wstring(user) +
-			L"/" + std::to_wstring(administrator) + L"/" + std::to_wstring(restricted) + L"/" + std::to_wstring(setup);
-		result = QuickAccess::AdminContext(context, administrator, restricted, setup);
+			L"/" + std::to_wstring(administrator) + L"/" + std::to_wstring(restricted) + L"/" + datasource;
+		result = QuickAccess::AdminContext(context, administrator, restricted);
+		if (administrative != nullptr) *administrative = setup;
 		return source == aaApi_GetActiveDatasource() && user == aaApi_GetCurrentUserId();
+	}
+	bool ReadAdminSession(void*, QuickAccess::AdminSession& result)
+	{
+		return BuildAdmin(result.commands, &result.administrative);
+	}
+	BOOL ReadAdminConnection(HDSOURCE source, LPWSTR* datasource, LPWSTR* username, LPWSTR* token)
+	{
+		__try { return aaApi_GetConnectionInfo5(source, nullptr, nullptr, nullptr, datasource, username, token, nullptr, nullptr); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { Report(L"SDK connection-information export unavailable"); return FALSE; }
+	}
+	LONG_PTR LoginAdmin(HWND parent, ULONG flags, LPWSTR datasource, LONG capacity, LPCWSTR username, LPCWSTR token)
+	{
+		__try { return aaApi_LoginDlgExt(parent, L"Datasource administration", flags, datasource, capacity, username, token, nullptr); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { Report(L"SDK administrative sign-in export unavailable"); return IDABORT; }
+	}
+	QuickAccess::AdminAccess LoginAdminSession(void*, const QuickAccess::ContextState& expected, std::wstring& error)
+	{
+		struct Connection
+		{
+			LPWSTR datasource = nullptr, username = nullptr, token = nullptr;
+			~Connection()
+			{
+				for (LPWSTR value : {datasource, username, token}) if (value != nullptr)
+				{ SecureZeroMemory(value, (std::wcslen(value) + 1) * sizeof(wchar_t)); aaApi_Free(value); }
+			}
+		} connection;
+		const HDSOURCE source = aaApi_GetActiveDatasource();
+		if (source == nullptr || !ReadAdminConnection(source, &connection.datasource, &connection.username, &connection.token) ||
+			connection.datasource == nullptr || !*connection.datasource || connection.username == nullptr || !*connection.username)
+		{ error = L"ProjectWise could not read the current datasource login. Reopen the Admin command after reconnecting."; return QuickAccess::AdminAccess::Failed; }
+		wchar_t datasource[1024]{};
+		const auto length = std::wcslen(connection.datasource);
+		if (length >= ARRAYSIZE(datasource)) { error = L"The current datasource name is too long for administrative sign-in."; return QuickAccess::AdminAccess::Failed; }
+		std::wmemcpy(datasource, connection.datasource, length + 1);
+		QuickAccess::ContextState current;
+		if (!BuildAdmin(current) || !current.visible || current.context != expected.context)
+		{ error = L"The datasource or user changed before administrative sign-in."; return QuickAccess::AdminAccess::Failed; }
+		// Use only the current connection's SDK-issued token. Native automatic-login preferences may belong to another account.
+		ULONG flags = AALOGIN_ADMINISTRATIVE | AALOGIN_REUSE_SESSION | AALOGIN_NO_DS_SELECT | AALOGIN_NO_USER_CHANGE |
+			AALOGIN_NO_AUTOLOGIN | AALOGIN_HIDE_SSO_GROUP | AALOGIN_NO_WORKING_DIR_PRECREATE;
+		if (connection.token != nullptr && *connection.token) flags |= AALOGIN_SILENT;
+		HWND parent = GetLastActivePopup(g_frame);
+		if (!IsWindow(parent)) parent = g_frame;
+		aaApi_RemoveLastError();
+		const LONG_PTR result = LoginAdmin(parent, flags, datasource, ARRAYSIZE(datasource), connection.username, connection.token);
+		if (result == IDCANCEL) return QuickAccess::AdminAccess::Cancelled;
+		if (result != IDOK)
+		{
+			const LONG code = aaApi_GetLastErrorId();
+			error = L"ProjectWise did not grant administrative access to the current datasource" +
+				(code ? L" (error " + std::to_wstring(code) + L")." : std::wstring(L"."));
+			return QuickAccess::AdminAccess::Failed;
+		}
+		g_workflowChecked = 0; g_selectorsChecked = 0;
+		aaApi_UpdateProjectWindows(); aaApi_UpdateDocumentWindows();
+		return QuickAccess::AdminAccess::Ready;
+	}
+	QuickAccess::AdminAccess EnsureCurrentAdmin(const QuickAccess::ContextState& shown, UINT command, QuickAccess::ContextState& ready, std::wstring& error)
+	{
+		return QuickAccess::EnsureAdminSession({nullptr, ReadAdminSession, LoginAdminSession}, shown, command, ready, error);
 	}
 	bool RefreshAdminImpl(QuickAccess::ContextState& result)
 	{
@@ -697,8 +763,7 @@ namespace
 		{
 			QuickAccess::ContextState current;
 			if (!QuickAccess::ValidateNewUser(user, error)) return false;
-			if (!BuildAdmin(current) || !QuickAccess::CanInvokeWorkflow(shown, current, static_cast<UINT>(QuickAccess::AdminCommand::NewUser)) || !aaApi_HasAdminSetup())
-			{ error = L"The datasource or administrative session changed. Reopen New User."; return false; }
+			if (EnsureCurrentAdmin(shown, static_cast<UINT>(QuickAccess::AdminCommand::NewUser), current, error) != QuickAccess::AdminAccess::Ready) return false;
 			LONG id = 0;
 			// The server remains authoritative for Restricted Administrator Users-node permissions and uniqueness.
 			// The public single-identity compatibility call also sets the chosen type and credentials.
@@ -730,25 +795,21 @@ namespace
 		try
 		{
 			QuickAccess::ContextState current;
-			if (!BuildAdmin(current) || !QuickAccess::CanInvokeWorkflow(shown, current, command)) return false;
+			std::wstring error;
+			const auto access = EnsureCurrentAdmin(shown, command, current, error);
+			if (access == QuickAccess::AdminAccess::Cancelled) return true;
+			if (access != QuickAccess::AdminAccess::Ready)
+			{ MessageBoxW(g_frame, error.c_str(), L"Datasource administration", MB_OK | MB_ICONINFORMATION); return false; }
 			wchar_t datasource[1024]{};
 			if (!aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource))) return false;
 			if (command == static_cast<UINT>(QuickAccess::AdminCommand::NewUser))
 			{
-				const INT_PTR result = QuickAccess::ShowNewUserDialog(g_frame, g_instance, shown, datasource, nullptr, CreateUser);
+				const INT_PTR result = QuickAccess::ShowNewUserDialog(g_frame, g_instance, current, datasource, nullptr, CreateUser);
 				return result == IDOK || result == IDCANCEL;
 			}
 			if (command == static_cast<UINT>(QuickAccess::AdminCommand::Users))
 			{
 				const INT_PTR result = aaApi_UserManagementDlg(g_frame, nullptr);
-				return result == IDOK || result == IDCANCEL;
-			}
-			if (command == static_cast<UINT>(QuickAccess::AdminCommand::SignIn))
-			{
-				// An explicit native login prompts for credentials. Never silently promote a normal Explorer session.
-				const LONG_PTR result = aaApi_LoginDlgExt(g_frame, L"Administrative sign-in", AALOGIN_ADMINISTRATIVE | AALOGIN_REUSE_SESSION |
-					AALOGIN_NO_DS_SELECT | AALOGIN_NO_AUTOLOGIN, datasource, ARRAYSIZE(datasource), nullptr, nullptr, nullptr);
-				if (result == IDOK) { g_workflowChecked = 0; g_selectorsChecked = 0; aaApi_UpdateProjectWindows(); aaApi_UpdateDocumentWindows(); }
 				return result == IDOK || result == IDCANCEL;
 			}
 			return false;

@@ -704,15 +704,112 @@ namespace
 		DestroyWindow(content);
 	}
 
+	struct AdminSessionFixture
+	{
+		QuickAccess::AdminSession session, after;
+		QuickAccess::AdminAccess outcome = QuickAccess::AdminAccess::Ready;
+		bool available = true, replaceOnLogin = false, failAfterLogin = false, replaceOnSecondRead = false, throwLogin = false, throwRead = false;
+		unsigned reads = 0, logins = 0;
+		static bool Read(void* context, QuickAccess::AdminSession& result)
+		{
+			auto& fixture = *static_cast<AdminSessionFixture*>(context); ++fixture.reads;
+			if (fixture.throwRead) throw 1;
+			if (!fixture.available || (fixture.failAfterLogin && fixture.logins != 0)) return false;
+			if (fixture.replaceOnSecondRead && fixture.reads == 2) fixture.session = fixture.after;
+			result = fixture.session; return true;
+		}
+		static QuickAccess::AdminAccess Login(void* context, const QuickAccess::ContextState& expected, std::wstring& error)
+		{
+			auto& fixture = *static_cast<AdminSessionFixture*>(context); ++fixture.logins;
+			Expect(expected.context == fixture.session.commands.context, L"automatic administrative login receives the validated current identity");
+			if (fixture.throwLogin) throw 1;
+			if (fixture.outcome == QuickAccess::AdminAccess::Failed) error = L"Denied by server.";
+			if (fixture.outcome != QuickAccess::AdminAccess::Ready) return fixture.outcome;
+			if (fixture.replaceOnLogin) fixture.session = fixture.after;
+			else fixture.session.administrative = true;
+			return fixture.outcome;
+		}
+		QuickAccess::AdminSessionHost Host() { return {this, Read, Login}; }
+	};
+	void CheckAdminSession()
+	{
+		using namespace QuickAccess;
+		const auto shown = AdminContext(L"current datasource/current user/admin role", true, false);
+		ContextState ready; std::wstring error;
+		for (const auto command : {AdminCommand::NewUser, AdminCommand::Users})
+		{
+			AdminSessionFixture fixture; fixture.session.commands = shown;
+			Expect(EnsureAdminSession(fixture.Host(), shown, static_cast<UINT>(command), ready, error) == AdminAccess::Ready &&
+				fixture.logins == 1 && fixture.reads == 2 && ready.context == shown.context && error.empty(),
+				L"each Admin command establishes and verifies administrative access as part of the action");
+			Expect(EnsureAdminSession(fixture.Host(), shown, static_cast<UINT>(command), ready, error) == AdminAccess::Ready && fixture.logins == 1,
+				L"an existing administrative connection is reused without another login");
+		}
+		AdminSessionFixture fixture; fixture.session.commands = shown;
+		const auto restricted = AdminContext(L"current datasource/restricted administrator", false, true);
+		fixture.session.commands = restricted;
+		Expect(EnsureAdminSession(fixture.Host(), restricted, 2, ready, error) == AdminAccess::Ready && fixture.logins == 1 && ready.context == restricted.context,
+			L"Restricted Administrators use the same automatic session flow without changing identity or role");
+		fixture = {}; fixture.session.commands = shown;
+		fixture.outcome = AdminAccess::Cancelled;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Cancelled && fixture.logins == 1 && !ready.visible && !error.empty(),
+			L"cancelled authentication stops the action without a retry or actionable context");
+		fixture.outcome = AdminAccess::Ready;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Ready && fixture.logins == 2,
+			L"a later explicit action can retry authentication after cancellation");
+		fixture = {}; fixture.session.commands = shown; fixture.outcome = AdminAccess::Failed;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 3, ready, error) == AdminAccess::Failed && fixture.logins == 1 && !ready.visible && error == L"Denied by server.",
+			L"denied authentication retains the error and never releases an administrative command");
+		for (const auto* changed : {L"different datasource/current user/admin role", L"current datasource/different user/admin role", L"current datasource/current user/restricted role"})
+		{
+			fixture = {}; fixture.session.commands = shown; fixture.replaceOnLogin = true;
+			fixture.after = {AdminContext(changed, true, false), true};
+			Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && fixture.logins == 1 && !ready.visible,
+				L"datasource, user or role changes during login stop the original administrative action");
+		}
+		fixture = {}; fixture.session.commands = shown; fixture.replaceOnLogin = true; fixture.after = {shown, false};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"a nominal login success still requires the SDK to confirm administrative setup");
+		fixture.after = {{}, true}; fixture.session = {shown, false};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"losing administrative membership during login prevents command execution");
+		fixture.after = {shown, true}; fixture.after.commands.actions[0].enabled = false; fixture.session = {shown, false};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"a revoked command after successful login remains unavailable");
+		fixture = {}; fixture.session.commands = shown; fixture.failAfterLogin = true;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"post-login read failure cannot reuse a stale administrative context");
+		fixture = {}; fixture.session = {shown, true}; fixture.replaceOnSecondRead = true;
+		fixture.after = {AdminContext(L"another datasource/user", true, false), true};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && fixture.logins == 0 && !ready.visible,
+			L"an already administrative session is revalidated before allowing the action");
+		fixture = {}; fixture.session.commands = AdminContext(L"already changed datasource", true, false);
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && fixture.logins == 0,
+			L"a stale command cannot initiate administrative authentication on a different datasource");
+		fixture = {};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && fixture.logins == 0,
+			L"users without an administrative role cannot initiate the automatic sign-in");
+		fixture.session.commands = shown;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 1, ready, error) == AdminAccess::Failed && fixture.logins == 0,
+			L"the removed sign-in command cannot be invoked through its old numeric ID");
+		fixture.throwLogin = true;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible && !error.empty(),
+			L"authentication exceptions are contained and never allow an administrative action");
+		fixture.throwLogin = false; fixture.throwRead = true;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"session query exceptions do not retain an earlier ready context");
+	}
+
 	void CheckAdminAndRecovery(HWND owner, const wchar_t* previewPath)
 	{
 		using namespace QuickAccess;
-		Expect(!AdminContext(L"ds/user", false, false, true).visible, L"an administrative session alone does not bypass Admin-group visibility");
-		Expect(!AdminContext(L"", true, false, true).visible, L"no datasource context means no Admin tab");
-		const auto member = AdminContext(L"ds/user/member", true, false, false);
-		const auto restricted = AdminContext(L"ds/user/restricted", false, true, false);
-		Expect(member.visible && restricted.visible && !member.actions[0].enabled && member.actions[2].enabled, L"Administrator and Restricted Administrator members see Admin but need an administrative sign-in to create users");
-		Expect(AdminContext(L"ds/user/admin", false, true, true).actions[0].enabled, L"a restricted administrative session can request user creation through server authorization");
+		CheckAdminSession();
+		Expect(!AdminContext(L"ds/user", false, false).visible, L"an administrative session alone does not bypass Admin-group visibility");
+		Expect(!AdminContext(L"", true, false).visible, L"no datasource context means no Admin tab");
+		const auto member = AdminContext(L"ds/user/member", true, false);
+		const auto restricted = AdminContext(L"ds/user/restricted", false, true);
+		Expect(member.visible && restricted.visible && member.actions.size() == 2 && restricted.actions.size() == 2 &&
+			member.actions[0].enabled && restricted.actions[0].enabled, L"Admin members can open New User directly with no separate sign-in action");
 		FakeHost host; host.admin = member;
 		Host callbacks{&host, FakeHost::Refresh, FakeHost::Execute};
 		callbacks.refreshWorkflow = FakeHost::RefreshWorkflow; callbacks.executeWorkflow = FakeHost::ExecuteWorkflow;
@@ -727,11 +824,12 @@ namespace
 		SetFocus(tabs); QueuedKey(tabs, VK_END);
 		Expect(SelectedTab(window) == Tab::Admin && TabCtrl_GetCurSel(tabs) == 4, L"tab keyboard routing uses contextual identity rather than fixed native indices");
 		QueuedKey(tabs, VK_DOWN);
-		Expect(GetDlgCtrlID(GetFocus()) == kFirstAdmin + 1, L"Admin keyboard entry skips unavailable New User");
-		Expect(QueuedKey(GetFocus(), VK_RETURN) && host.lastAdmin == static_cast<UINT>(AdminCommand::Users), L"Enter activates the matching permitted administrative action");
+		Expect(GetDlgCtrlID(GetFocus()) == kFirstAdmin && GetDlgItem(CommandPage(window), kFirstAdmin + 2) == nullptr,
+			L"Admin keyboard entry reaches New User and no separate login control exists");
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && host.lastAdmin == static_cast<UINT>(AdminCommand::NewUser), L"Enter opens New User directly for an authorized member");
 		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
-		Expect(!InvokeAdmin(window, kFirstAdmin), L"normal Explorer sessions cannot create users just from group membership");
-		host.admin = AdminContext(L"ds/user/admin", true, false, true); Refresh(window);
+		Expect(InvokeAdmin(window, kFirstAdmin + 1) && host.lastAdmin == static_cast<UINT>(AdminCommand::Users), L"Users and Groups is available as a direct administrative action");
+		host.admin = AdminContext(L"ds/user/admin", true, false); Refresh(window);
 		Expect(InvokeAdmin(window, kFirstAdmin) && host.lastAdmin == static_cast<UINT>(AdminCommand::NewUser), L"New User dispatches only after current administrative context is revalidated");
 		if (previewPath != nullptr) Expect(SaveRibbonPreview(window, previewPath), L"native contextual Admin preview written");
 		host.workflow = {true, false, L"ds/folder/doc", {{501, L"Next", true, WorkflowActionKind::Next}}}; Refresh(window);
@@ -914,7 +1012,7 @@ namespace
 			L"New User retains the native error code, message and extended server detail");
 		Expect(UserCreationError(58004, L"", L"").find(L"does not identify a permissions problem") != std::wstring::npos,
 			L"generic invalid-data errors are not misreported as proven permissions failures");
-		const auto shown = AdminContext(L"datasource/user/session", true, false, true);
+		const auto shown = AdminContext(L"datasource/user/session", true, false);
 		for (const auto mode : {UserDialogMode::Federated, UserDialogMode::Logical, UserDialogMode::Cancel, UserDialogMode::Throw})
 		{
 			DialogFixture fixture{owner}; fixture.mode = mode;
