@@ -5,6 +5,8 @@
 #include <delayimp.h>
 
 #include "QuickAccess.h"
+#include "Admin.h"
+#include "ClassicUi.h"
 
 #include <array>
 #include <cwchar>
@@ -20,6 +22,11 @@ namespace
 	HWND g_selectionControl = nullptr;
 	UINT g_toggleCommand = 0;
 	UINT g_viewCommand = 0;
+	UINT g_classicCommand = 0;
+	UINT_PTR g_healthTimer = 0;
+	bool g_classicPreferred = false;
+	bool g_ribbonExpected = false;
+	bool g_creationFailed = false;
 	UINT_PTR g_startupTimer = 0;
 	unsigned g_attempts = 0;
 	LONG g_initialised = 0;
@@ -551,7 +558,7 @@ namespace
 		}
 		std::sort(identities.begin(), identities.end());
 		selection.key = std::to_wstring(reinterpret_cast<UINT_PTR>(selection.source)) + L"/" + std::to_wstring(selection.folder) +
-			L"/" + std::to_wstring(selection.workflow) + L"/" + std::to_wstring(reinterpret_cast<UINT_PTR>(selection.control));
+			L"/" + std::to_wstring(selection.workflow) + L"/" + std::to_wstring(reinterpret_cast<UINT_PTR>(selection.control)) + L"/" + std::to_wstring(aaApi_GetCurrentUserId());
 		for (const auto& identity : identities) selection.key += L"/" + identity;
 		result.visible = true;
 		result.context = selection.key;
@@ -616,6 +623,113 @@ namespace
 		}
 	}
 
+	bool BuildAdmin(QuickAccess::ContextState& result)
+	{
+		result = {};
+		const HDSOURCE source = aaApi_GetActiveDatasource();
+		if (source == nullptr) return true;
+		const LONG user = aaApi_GetCurrentUserId();
+		const bool administrator = aaApi_IsCurrentUserAdmin() != FALSE;
+		const bool restricted = aaApi_IsUserRestrictedAdmin(0) != FALSE;
+		const bool setup = aaApi_HasAdminSetup() != FALSE;
+		const std::wstring context = std::to_wstring(reinterpret_cast<UINT_PTR>(source)) + L"/" + std::to_wstring(user) +
+			L"/" + std::to_wstring(administrator) + L"/" + std::to_wstring(restricted) + L"/" + std::to_wstring(setup);
+		result = QuickAccess::AdminContext(context, administrator, restricted, setup);
+		return source == aaApi_GetActiveDatasource() && user == aaApi_GetCurrentUserId();
+	}
+	bool RefreshAdminImpl(QuickAccess::ContextState& result)
+	{
+		try { return BuildAdmin(result); }
+		catch (...) { Report(L"could not read administrative context"); return false; }
+	}
+	bool RefreshAdmin(void*, QuickAccess::ContextState& result)
+	{
+		__try { return IsWindowEnabled(g_frame) && RefreshAdminImpl(result); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+	}
+	bool CreateUserImpl(const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	{
+		try
+		{
+			QuickAccess::ContextState current;
+			if (!QuickAccess::ValidateNewUser(user, error)) return false;
+			if (!BuildAdmin(current) || !QuickAccess::CanInvokeWorkflow(shown, current, static_cast<UINT>(QuickAccess::AdminCommand::NewUser)) || !aaApi_HasAdminSetup())
+			{ error = L"The datasource or administrative session changed. Reopen New User."; return false; }
+			LONG id = 0;
+			// The server remains authoritative for Restricted Administrator Users-node permissions and uniqueness.
+			if (!aaApi_CreateUser3(&id, user.name.c_str(), user.description.c_str(), user.email.c_str()))
+			{
+				wchar_t text[180]{};
+				swprintf_s(text, L"ProjectWise rejected user creation (error %ld). Check Users-node permissions and the account name.", aaApi_GetLastErrorId());
+				error = text; return false;
+			}
+			return true;
+		}
+		catch (...) { error = L"The account could not be created."; return false; }
+	}
+	bool CreateUser(void*, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	{
+		__try { return CreateUserImpl(shown, user, error); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+	}
+	bool ExecuteAdminImpl(const QuickAccess::ContextState& shown, UINT command)
+	{
+		try
+		{
+			QuickAccess::ContextState current;
+			if (!BuildAdmin(current) || !QuickAccess::CanInvokeWorkflow(shown, current, command)) return false;
+			wchar_t datasource[1024]{};
+			if (!aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource))) return false;
+			if (command == static_cast<UINT>(QuickAccess::AdminCommand::NewUser))
+			{
+				const INT_PTR result = QuickAccess::ShowNewUserDialog(g_frame, g_instance, shown, datasource, nullptr, CreateUser);
+				return result == IDOK || result == IDCANCEL;
+			}
+			if (command == static_cast<UINT>(QuickAccess::AdminCommand::Users))
+			{
+				const INT_PTR result = aaApi_UserManagementDlg(g_frame, nullptr);
+				return result == IDOK || result == IDCANCEL;
+			}
+			if (command == static_cast<UINT>(QuickAccess::AdminCommand::SignIn))
+			{
+				// An explicit native login prompts for credentials. Never silently promote a normal Explorer session.
+				const LONG_PTR result = aaApi_LoginDlgExt(g_frame, L"Administrative sign-in", AALOGIN_ADMINISTRATIVE | AALOGIN_REUSE_SESSION |
+					AALOGIN_NO_DS_SELECT | AALOGIN_NO_AUTOLOGIN, datasource, ARRAYSIZE(datasource), nullptr, nullptr, nullptr);
+				if (result == IDOK) { g_workflowChecked = 0; g_selectorsChecked = 0; aaApi_UpdateProjectWindows(); aaApi_UpdateDocumentWindows(); }
+				return result == IDOK || result == IDCANCEL;
+			}
+			return false;
+		}
+		catch (...) { Report(L"administrative action failed"); return false; }
+	}
+	bool ExecuteAdmin(void*, const QuickAccess::ContextState& shown, UINT command)
+	{
+		__try { return IsWindowEnabled(g_frame) && ExecuteAdminImpl(shown, command); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+	}
+
+	bool RecoverClassic(const wchar_t* reason, bool interactive = false)
+	{
+		g_classicPreferred = true; g_ribbonExpected = false;
+		if (!QuickAccess::SaveClassicUiPreference(true)) Report(L"could not persist Classic UI preference");
+		if (g_startupTimer != 0) { KillTimer(nullptr, g_startupTimer); g_startupTimer = 0; }
+		if (IsWindow(g_window)) { QuickAccess::Dock(g_window, false); DestroyWindow(g_window); }
+		g_window = nullptr;
+		Report(reason);
+		const auto restored = QuickAccess::RestoreClassicToolbars(g_frame);
+		if (interactive && (restored.failed != 0 || restored.found == 0))
+			MessageBoxW(g_frame, L"The ribbon is stopped. Some native toolbars could not be verified automatically; use View > Toolbar to choose any missing toolbars.",
+				L"Classic UI", MB_OK | MB_ICONINFORMATION);
+		return IsWindow(g_frame);
+	}
+	bool RestoreClassic(void*) { return RecoverClassic(L"Classic UI selected", true); }
+	void RibbonFailed(void*, const wchar_t* reason) { RecoverClassic(reason); }
+	void CALLBACK CheckRibbon(HWND, UINT, UINT_PTR, DWORD)
+	{
+		if (g_ribbonExpected && !g_classicPreferred && IsWindowEnabled(g_frame) && !QuickAccess::IsHealthy(g_window))
+			RecoverClassic(L"ribbon health check failed; Classic UI restored");
+	}
+
 	bool EnsureWindow()
 	{
 		if (IsWindow(g_window)) return true;
@@ -627,9 +741,14 @@ namespace
 				if (target == nullptr) { Report(L"no Explorer selection control is available for keyboard focus"); return false; }
 				SetFocus(target);
 				return GetFocus() == target || IsChild(target, GetFocus());
-			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow, RefreshSelectors, SelectChoice});
+			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow, RefreshSelectors, SelectChoice, RefreshAdmin, ExecuteAdmin, RestoreClassic, RibbonFailed});
+		g_creationFailed = g_window == nullptr;
 		if (g_window != nullptr && !QuickAccess::Dock(g_window, true))
-			Report(L"Explorer's content pane is not ready for docking; use the toolbar context menu to retry");
+		{
+			DestroyWindow(g_window); g_window = nullptr;
+			Report(L"Explorer's content pane is not ready for docking");
+		}
+		g_ribbonExpected = g_window != nullptr;
 		return g_window != nullptr;
 	}
 
@@ -637,11 +756,11 @@ namespace
 	{
 		if (command == nullptr || (static_cast<UINT>(command->lCommandId) != g_toggleCommand &&
 			static_cast<UINT>(command->lCommandId) != g_viewCommand)) return -1;
+		g_classicPreferred = false;
+		QuickAccess::SaveClassicUiPreference(false);
 		if (!EnsureWindow())
 		{
-			Report(L"could not open toolbar");
-			MessageBoxW(aaApi_GetMainFrameWindow(), L"The Quick Access toolbar could not be created on Explorer's UI thread.",
-						L"ProjectWise Quick Access", MB_OK | MB_ICONERROR);
+			RecoverClassic(L"could not open ribbon; Classic UI restored", true);
 			return -1;
 		}
 		const bool show = QuickAccess::GetDisplayMode(g_window) == QuickAccess::DisplayMode::Hidden || !IsWindowVisible(g_window);
@@ -656,9 +775,7 @@ namespace
 		}
 		__except (SdkLoadExceptionFilter(GetExceptionCode()))
 		{
-			Report(L"SDK dependency or export unavailable in toolbar visibility callback");
-			MessageBoxW(g_frame, L"Explorer could not open the Quick Access toolbar. See the debug output for details.",
-						L"ProjectWise Quick Access", MB_OK | MB_ICONERROR);
+			RecoverClassic(L"SDK dependency unavailable; Classic UI restored");
 			return -1;
 		}
 	}
@@ -668,33 +785,50 @@ namespace
 		return IsWindow(g_window) && IsWindowVisible(g_window) &&
 			QuickAccess::GetDisplayMode(g_window) != QuickAccess::DisplayMode::Hidden ? AAMS_CHECKED : 0;
 	}
+	LONG CALLBACK ClassicCommand(LPAACMDPARAM command)
+	{
+		if (command == nullptr || static_cast<UINT>(command->lCommandId) != g_classicCommand) return -1;
+		__try
+		{
+			if (!IsWindow(g_frame)) g_frame = aaApi_GetMainFrameWindow();
+			return RecoverClassic(L"Classic UI selected from Tools", true) ? 0 : -1;
+		}
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { RecoverClassic(L"Classic UI retained; SDK unavailable"); return -1; }
+	}
+	LONG CALLBACK ClassicState(LPAACMDSTATE) { return g_classicPreferred ? AAMS_CHECKED : 0; }
 
 	void CALLBACK Startup(HWND, UINT, UINT_PTR timer, DWORD)
 	{
 		__try
 		{
-			if (EnsureWindow())
+			if (g_classicPreferred)
+			{
+				g_frame = aaApi_GetMainFrameWindow();
+				if (IsWindow(g_frame)) { RecoverClassic(L"Classic UI preference restored"); return; }
+				if (++g_attempts >= 120) { KillTimer(nullptr, timer); g_startupTimer = 0; }
+			}
+			else if (EnsureWindow())
 			{
 				KillTimer(nullptr, timer);
 				g_startupTimer = 0;
 				ShowWindow(g_window, SW_SHOWNOACTIVATE);
 			}
-			else if (++g_attempts >= 120)
+			else if (g_creationFailed || ++g_attempts >= 120)
 			{
 				KillTimer(nullptr, timer);
 				g_startupTimer = 0;
-				Report(L"Explorer frame was unavailable; use Tools > Quick Access Toolbar to retry");
+				RecoverClassic(L"ribbon startup failed; Classic UI restored");
 			}
 		}
 		__except (SdkLoadExceptionFilter(GetExceptionCode()))
 		{
 			KillTimer(nullptr, timer);
 			g_startupTimer = 0;
-			Report(L"SDK dependency or export unavailable; toolbar not opened");
+			RecoverClassic(L"SDK dependency unavailable during startup; Classic UI retained");
 		}
 	}
 
-	bool AddVisibilityCommand(LONG type, const wchar_t* name, UINT& id)
+	bool AddVisibilityCommand(LONG type, const wchar_t* name, UINT& id, bool classic = false)
 	{
 		id = aaApi_ReserveCommandIdByType(type);
 		if (id == 0)
@@ -709,8 +843,8 @@ namespace
 		item.uiCommandId = id;
 		item.ushParamType = AACMDPT_GENERIC;
 		item.lptstrName = const_cast<LPWSTR>(name);
-		item.fpExecute = Toggle;
-		item.fpGetState = ToggleState;
+		item.fpExecute = classic ? ClassicCommand : Toggle;
+		item.fpGetState = classic ? ClassicState : ToggleState;
 		if (aaApi_AddCustomMenuItem(0, AADMSMI_LAST, &item) == 0)
 		{
 			Report(L"could not register ribbon visibility menu command");
@@ -721,12 +855,18 @@ namespace
 
 	bool Initialise()
 	{
-		if (!AddVisibilityCommand(AAMENU_TOOLS, L"Quick Access Toolbar", g_toggleCommand) ||
-			!AddVisibilityCommand(AAMENU_VIEW, L"Ribbon", g_viewCommand)) return false;
+		g_classicPreferred = QuickAccess::PreferClassicUi();
+		g_frame = aaApi_GetMainFrameWindow();
+		// Register recovery before any ribbon window is created, so it remains available after startup failures.
+		if (!AddVisibilityCommand(AAMENU_TOOLS, L"Re-enable Classic UI", g_classicCommand, true) ||
+			!AddVisibilityCommand(AAMENU_TOOLS, L"Quick Access Toolbar", g_toggleCommand) ||
+			!AddVisibilityCommand(AAMENU_VIEW, L"Ribbon", g_viewCommand)) { RecoverClassic(L"ribbon menu registration failed"); return false; }
+		g_healthTimer = SetTimer(nullptr, 0, 1000, CheckRibbon);
+		if (g_healthTimer == 0) { RecoverClassic(L"ribbon health monitoring unavailable"); return false; }
 		g_startupTimer = SetTimer(nullptr, 0, 250, Startup);
 		if (g_startupTimer == 0)
 		{
-			Report(L"could not schedule toolbar startup; use the Tools menu to open it");
+			RecoverClassic(L"could not schedule ribbon startup");
 			return false;
 		}
 		Report(L"module initialised");
@@ -765,7 +905,7 @@ extern "C" LONG WINAPI CustomInitialize(ULONG applicationMask, LPVOID)
 	}
 	__except (SdkLoadExceptionFilter(GetExceptionCode()))
 	{
-		Report(L"SDK dependency or export unavailable; toolbar inactive");
+		RecoverClassic(L"SDK dependency or export unavailable; Classic UI retained");
 	}
 	return IDOK;
 }

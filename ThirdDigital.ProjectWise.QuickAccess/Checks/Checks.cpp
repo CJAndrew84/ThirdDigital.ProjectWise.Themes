@@ -1,4 +1,7 @@
 #include "..\src\QuickAccess.h"
+#include "..\src\Admin.h"
+#include "..\src\AdminResources.h"
+#include "..\src\ClassicUi.h"
 
 #include <commctrl.h>
 #include <oleacc.h>
@@ -57,6 +60,11 @@ namespace
 		QuickAccess::Selector lastSelector = QuickAccess::Selector::Interface;
 		UINT_PTR lastChoice = 0;
 		HWND destroyOnSelectorsRefresh = nullptr, destroyOnSelect = nullptr;
+		QuickAccess::ContextState admin;
+		bool adminAvailable = true;
+		unsigned adminExecutions = 0, recoveries = 0, classicSelections = 0;
+		UINT lastAdmin = 0;
+		HWND recoveryWindow = nullptr, destroyOnAdminRefresh = nullptr;
 
 		static bool Refresh(void* context, QuickAccess::States& result)
 		{
@@ -206,6 +214,26 @@ namespace
 				DestroyWindow(window);
 			}
 			return host.executeSucceeds;
+		}
+		static bool RefreshAdmin(void* context, QuickAccess::ContextState& result)
+		{
+			auto& host = *static_cast<FakeHost*>(context); result = host.admin;
+			if (host.destroyOnAdminRefresh != nullptr) { HWND window = host.destroyOnAdminRefresh; host.destroyOnAdminRefresh = nullptr; DestroyWindow(window); }
+			return host.adminAvailable;
+		}
+		static bool ExecuteAdmin(void* context, const QuickAccess::ContextState& shown, UINT command)
+		{
+			auto& host = *static_cast<FakeHost*>(context);
+			if (!QuickAccess::CanInvokeWorkflow(shown, host.admin, command)) return false;
+			++host.adminExecutions; host.lastAdmin = command; return true;
+		}
+		static bool RestoreClassic(void* context)
+		{
+			auto& host = *static_cast<FakeHost*>(context); ++host.classicSelections; DestroyWindow(host.recoveryWindow); return true;
+		}
+		static void Failed(void* context, const wchar_t*)
+		{
+			auto& host = *static_cast<FakeHost*>(context); ++host.recoveries; DestroyWindow(host.recoveryWindow);
 		}
 	};
 
@@ -659,6 +687,169 @@ namespace
 		host.destroyOnSelect = window;
 		Expect(SelectChoice(window, Selector::View, 0) && !IsWindow(window), L"destruction during selector execution is safe");
 		DestroyWindow(content);
+	}
+
+	void CheckAdminAndRecovery(HWND owner, const wchar_t* previewPath)
+	{
+		using namespace QuickAccess;
+		Expect(!AdminContext(L"ds/user", false, false, true).visible, L"an administrative session alone does not bypass Admin-group visibility");
+		Expect(!AdminContext(L"", true, false, true).visible, L"no datasource context means no Admin tab");
+		const auto member = AdminContext(L"ds/user/member", true, false, false);
+		const auto restricted = AdminContext(L"ds/user/restricted", false, true, false);
+		Expect(member.visible && restricted.visible && !member.actions[0].enabled && member.actions[2].enabled, L"Administrator and Restricted Administrator members see Admin but need an administrative sign-in to create users");
+		Expect(AdminContext(L"ds/user/admin", false, true, true).actions[0].enabled, L"a restricted administrative session can request user creation through server authorization");
+		FakeHost host; host.admin = member;
+		Host callbacks{&host, FakeHost::Refresh, FakeHost::Execute};
+		callbacks.refreshWorkflow = FakeHost::RefreshWorkflow; callbacks.executeWorkflow = FakeHost::ExecuteWorkflow;
+		callbacks.refreshAdmin = FakeHost::RefreshAdmin; callbacks.executeAdmin = FakeHost::ExecuteAdmin;
+		callbacks.restoreClassic = FakeHost::RestoreClassic; callbacks.failed = FakeHost::Failed;
+		HWND window = Create(owner, GetModuleHandleW(nullptr), callbacks); host.recoveryWindow = window;
+		Expect(window != nullptr && IsHealthy(window), L"contextual Admin ribbon starts with healthy controls");
+		if (window == nullptr) return;
+		ShowWindow(owner, SW_SHOWNOACTIVATE); ShowWindow(window, SW_SHOWNOACTIVATE);
+		HWND tabs = FindWindowExW(window, nullptr, WC_TABCONTROLW, nullptr);
+		Expect(TabCtrl_GetItemCount(tabs) == 5 && !SelectTab(window, Tab::Workflow), L"Admin can appear without a Workflow tab");
+		SetFocus(tabs); QueuedKey(tabs, VK_END);
+		Expect(SelectedTab(window) == Tab::Admin && TabCtrl_GetCurSel(tabs) == 4, L"tab keyboard routing uses contextual identity rather than fixed native indices");
+		QueuedKey(tabs, VK_DOWN);
+		Expect(GetDlgCtrlID(GetFocus()) == kFirstAdmin + 1, L"Admin keyboard entry skips unavailable New User");
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && host.lastAdmin == static_cast<UINT>(AdminCommand::Users), L"Enter activates the matching permitted administrative action");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		Expect(!InvokeAdmin(window, kFirstAdmin), L"normal Explorer sessions cannot create users just from group membership");
+		host.admin = AdminContext(L"ds/user/admin", true, false, true); Refresh(window);
+		Expect(InvokeAdmin(window, kFirstAdmin) && host.lastAdmin == static_cast<UINT>(AdminCommand::NewUser), L"New User dispatches only after current administrative context is revalidated");
+		if (previewPath != nullptr) Expect(SaveRibbonPreview(window, previewPath), L"native contextual Admin preview written");
+		host.workflow = {true, false, L"ds/folder/doc", {{501, L"Next", true, WorkflowActionKind::Next}}}; Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 6 && SelectedTab(window) == Tab::Admin && TabCtrl_GetCurSel(tabs) == 5, L"inserting Workflow preserves selection of the Admin tab");
+		SetFocus(tabs); QueuedKey(tabs, VK_LEFT);
+		Expect(SelectedTab(window) == Tab::Workflow, L"adjacent contextual tabs retain correct keyboard order");
+		SelectTab(window, Tab::Admin); host.workflow = {}; Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 5 && SelectedTab(window) == Tab::Admin && TabCtrl_GetCurSel(tabs) == 4, L"removing Workflow preserves Admin's native selected index");
+		const unsigned before = host.adminExecutions;
+		host.admin.context = L"another datasource or user";
+		Expect(!InvokeAdmin(window, kFirstAdmin) && host.adminExecutions == before, L"datasource or identity changes reject stale administrative actions");
+		host.admin.actions[0].enabled = false; Refresh(window);
+		Expect(!InvokeAdmin(window, kFirstAdmin), L"revoked create permissions cannot dispatch New User");
+		EnableWindow(owner, FALSE); Expect(!InvokeAdmin(window, kFirstAdmin + 1), L"modal Explorer prevents administrative commands"); EnableWindow(owner, TRUE);
+		SetDisplayMode(window, DisplayMode::Minimized); SelectTab(window, Tab::Admin);
+		host.admin = {}; Refresh(window);
+		Expect(SelectedTab(window) == Tab::Home && TabCtrl_GetItemCount(tabs) == 4 && !IsPopupOpen(window), L"losing Admin membership removes its tab and popup with a visible Home fallback");
+		Expect(!InvokeAdmin(window, kFirstAdmin), L"removed Admin controls cannot be invoked");
+		SetDisplayMode(window, DisplayMode::Expanded); SelectTab(window, Tab::Tools);
+		HWND classic = GetDlgItem(CommandPage(window), kClassic);
+		Expect(IsWindowVisible(classic) && AccessibleName(classic) == L"Re-enable Classic UI", L"Tools exposes an accessible Classic UI recovery option");
+		SetFocus(classic);
+		Expect(QueuedKey(classic, VK_RETURN) && host.classicSelections == 1 && !IsWindow(window), L"Classic UI can stop the ribbon by keyboard without a successful SDK command query");
+		QueuedKey(owner, VK_RETURN, WM_KEYUP);
+		host.admin = member;
+		window = Create(owner, GetModuleHandleW(nullptr), callbacks); host.recoveryWindow = window;
+		HWND content = CreateWindowExW(0, L"STATIC", L"Recovery content", WS_CHILD | WS_VISIBLE, 0, 0, 640, 500, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+		const RECT original = RelativeRect(content, owner);
+		Expect(Dock(window, true), L"recovery test ribbon docks without hiding native UI");
+		DestroyWindow(Toolbar(window));
+		Expect(!IsHealthy(window), L"damage to an essential ribbon control is detected");
+		SendMessageW(window, WM_TIMER, 1, 0);
+		MSG message{};
+		while (PeekMessageW(&message, window, WM_APP, WM_APP + 200, PM_REMOVE)) DispatchMessageW(&message);
+		const RECT restored = RelativeRect(content, owner);
+		Expect(host.recoveries == 1 && !IsWindow(window) && EqualRect(&original, &restored), L"a handled ribbon failure stops the ribbon and restores the docked content layout");
+		DestroyWindow(content);
+		window = Create(owner, GetModuleHandleW(nullptr), callbacks); host.destroyOnAdminRefresh = window;
+		Refresh(window); Expect(!IsWindow(window), L"destruction during administrative-context refresh is safe");
+	}
+
+	struct DialogFixture { HWND owner = nullptr; unsigned calls = 0, ticks = 0; bool cancel = false; };
+	DialogFixture* g_dialogFixture = nullptr;
+	bool CreateFixtureUser(void* context, const QuickAccess::ContextState&, const QuickAccess::NewUser& user, std::wstring& error)
+	{
+		auto& fixture = *static_cast<DialogFixture*>(context); ++fixture.calls;
+		if (user.name == L"rejected") { error = L"Server rejected this account."; return false; }
+		return user.name == L"fixture.user" && user.email == L"fixture@example.test";
+	}
+	void CALLBACK DriveUserDialog(HWND, UINT, UINT_PTR, DWORD)
+	{
+		auto& fixture = *g_dialogFixture;
+		HWND dialog = GetLastActivePopup(fixture.owner);
+		if (GetDlgItem(dialog, IDC_USER_NAME) == nullptr) return;
+		if (fixture.cancel || ++fixture.ticks > 10) { SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0); return; }
+		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+		Expect(fixture.calls == 0, L"blank New User submissions do not reach the creation callback");
+		SetDlgItemTextW(dialog, IDC_USER_NAME, L"rejected"); SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+		Expect(fixture.calls == 1 && IsWindow(dialog) && GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_STATUS)) > 0, L"server rejection keeps New User open with an inline error");
+		SetDlgItemTextW(dialog, IDC_USER_NAME, L"fixture.user"); SetDlgItemTextW(dialog, IDC_USER_EMAIL, L"fixture@example.test");
+		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+	}
+	void CheckUserDialog(HWND owner)
+	{
+		using namespace QuickAccess;
+		std::wstring error;
+		Expect(!ValidateNewUser({L"   ", L"", L""}, error) && !error.empty(), L"New User validates a nonblank account name");
+		Expect(!ValidateNewUser({L"bad\nname", L"", L""}, error), L"New User rejects control characters in account names");
+		const auto shown = AdminContext(L"datasource/user/session", true, false, true);
+		DialogFixture fixture{owner}; g_dialogFixture = &fixture;
+		const UINT_PTR timer = SetTimer(nullptr, 0, 50, DriveUserDialog);
+		Expect(timer != 0, L"native New User dialog driver available");
+		if (timer == 0) return;
+		const auto result = ShowNewUserDialog(owner, GetModuleHandleW(nullptr), shown, L"Test datasource", &fixture, CreateFixtureUser);
+		KillTimer(nullptr, timer);
+		Expect(result == IDOK && fixture.calls == 2 && IsWindowEnabled(owner), L"native New User dialog submits valid fields and restores owner activation");
+		fixture = {owner}; fixture.cancel = true;
+		const UINT_PTR cancelTimer = SetTimer(nullptr, 0, 50, DriveUserDialog);
+		if (cancelTimer != 0)
+		{
+			const auto cancelled = ShowNewUserDialog(owner, GetModuleHandleW(nullptr), shown, L"Test datasource", &fixture, CreateFixtureUser);
+			KillTimer(nullptr, cancelTimer);
+			Expect(cancelled == IDCANCEL && fixture.calls == 0, L"cancelling New User creates no account");
+		}
+		g_dialogFixture = nullptr;
+	}
+
+	struct ClassicFixture
+	{
+		HMENU menu = nullptr;
+		std::array<HWND, 4> bars{};
+		std::array<UINT, 4> ids{0xE800, 45000, 0xE802, 45002};
+		unsigned commands = 0, unrelated = 0;
+	};
+	LRESULT CALLBACK ClassicFrame(HWND frame, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR data)
+	{
+		auto& fixture = *reinterpret_cast<ClassicFixture*>(data);
+		if (message == WM_INITMENUPOPUP)
+			for (std::size_t i = 0; i < fixture.bars.size(); ++i) CheckMenuItem(fixture.menu, fixture.ids[i], MF_BYCOMMAND | (IsWindowVisible(fixture.bars[i]) ? MF_CHECKED : MF_UNCHECKED));
+		if (message == WM_COMMAND)
+		{
+			for (std::size_t i = 0; i < fixture.bars.size(); ++i)
+				if (LOWORD(wParam) == fixture.ids[i]) { ++fixture.commands; ShowWindow(fixture.bars[i], SW_SHOWNOACTIVATE); return 0; }
+			++fixture.unrelated;
+		}
+		return DefSubclassProc(frame, message, wParam, lParam);
+	}
+	void CheckClassicRestoration()
+	{
+		const HINSTANCE instance = GetModuleHandleW(nullptr);
+		HWND frame = CreateWindowExW(0, L"STATIC", L"Native toolbar recovery", WS_OVERLAPPEDWINDOW, 0, 0, 700, 500, nullptr, nullptr, instance, nullptr);
+		ClassicFixture fixture; fixture.menu = CreateMenu();
+		HMENU view = CreatePopupMenu(), bars = CreatePopupMenu();
+		AppendMenuW(fixture.menu, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"View");
+		AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(bars), L"Native toolbar names may be localized");
+		for (const UINT id : fixture.ids) AppendMenuW(bars, MF_STRING | (id == 0xE802 ? MF_GRAYED : 0), id, L"Toolbar");
+		AppendMenuW(bars, MF_STRING, 0xE805, L"Customize"); AppendMenuW(view, MF_STRING, 45001, L"Unrelated command");
+		SetMenu(frame, fixture.menu);
+		HWND floating = CreateWindowExW(0, L"STATIC", L"Floating toolbar", WS_POPUP | WS_VISIBLE, 10, 10, 200, 100, frame, nullptr, instance, nullptr);
+		for (std::size_t i = 0; i < fixture.bars.size(); ++i)
+			fixture.bars[i] = CreateWindowExW(0, TOOLBARCLASSNAMEW, nullptr, WS_CHILD | (i == 0 ? WS_VISIBLE : 0), 0, 0, 200, 28,
+				i == 3 ? floating : frame, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(fixture.ids[i])), instance, nullptr);
+		SetWindowSubclass(frame, ClassicFrame, 1, reinterpret_cast<DWORD_PTR>(&fixture)); ShowWindow(frame, SW_SHOWNOACTIVATE);
+		const auto result = QuickAccess::RestoreClassicToolbars(frame);
+		Expect(result.found == 4 && result.restored == 2 && result.skipped == 1 && result.failed == 0, L"Classic recovery restores hidden docked and floating native toolbars and skips unavailable bars");
+		Expect(fixture.commands == 2 && fixture.unrelated == 0 && IsWindowVisible(fixture.bars[0]), L"Classic recovery leaves visible toolbars on and never invokes Customize or unrelated commands");
+		const auto repeat = QuickAccess::RestoreClassicToolbars(frame);
+		Expect(repeat.restored == 0 && fixture.commands == 2, L"repeated Classic recovery cannot toggle native toolbars off");
+		const bool preference = QuickAccess::PreferClassicUi();
+		Expect(QuickAccess::SaveClassicUiPreference(true) && QuickAccess::PreferClassicUi(), L"Classic UI preference survives a fresh registry read");
+		Expect(QuickAccess::SaveClassicUiPreference(false) && !QuickAccess::PreferClassicUi(), L"explicit Ribbon selection can clear the Classic UI preference");
+		QuickAccess::SaveClassicUiPreference(preference);
+		DestroyWindow(floating); DestroyWindow(frame); if (IsMenu(fixture.menu)) DestroyMenu(fixture.menu);
 	}
 
 	void CheckAccessibility(HWND owner, HWND window, FakeHost& host, HWND address, HWND content)
@@ -1402,6 +1593,9 @@ int wmain(int argc, wchar_t* argv[])
 	CheckWorkflowRibbon(owner, argc >= 5 && wcscmp(argv[3], L"--workflow-preview") == 0 ? argv[4] : nullptr);
 	CheckVersionsToggle(owner, argc >= 7 && wcscmp(argv[5], L"--view-preview") == 0 ? argv[6] : nullptr);
 	CheckSelectors(owner, argc >= 9 && wcscmp(argv[7], L"--selectors-preview") == 0 ? argv[8] : nullptr);
+	CheckAdminAndRecovery(owner, argc >= 11 && wcscmp(argv[9], L"--admin-preview") == 0 ? argv[10] : nullptr);
+	CheckUserDialog(owner);
+	CheckClassicRestoration();
 	HWND keyboard = QuickAccess::Create(owner, instance, callbacks);
 	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;

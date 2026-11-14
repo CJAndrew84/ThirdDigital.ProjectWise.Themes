@@ -1,0 +1,21 @@
+#include <windows.h>
+#include "AdminResources.h"
+
+IDD_NEW_USER DIALOGEX 0, 0, 350, 230
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "New datasource user"
+FONT 11, "Segoe UI"
+BEGIN
+    LTEXT "Datasource", -1, 12, 12, 70, 14
+    LTEXT "", IDC_USER_DATASOURCE, 88, 12, 250, 28
+    LTEXT "Name", -1, 12, 46, 70, 14
+    EDITTEXT IDC_USER_NAME, 88, 43, 250, 18, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "Description", -1, 12, 72, 70, 14
+    EDITTEXT IDC_USER_DESCRIPTION, 88, 69, 250, 18, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "E-mail", -1, 12, 98, 70, 14
+    EDITTEXT IDC_USER_EMAIL, 88, 95, 250, 18, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "Creates a datasource account. Login credentials are configured separately.", -1, 12, 124, 326, 30
+    LTEXT "", IDC_USER_STATUS, 12, 157, 326, 35
+    DEFPUSHBUTTON "Create account", IDOK, 179, 201, 88, 20, WS_TABSTOP
+    PUSHBUTTON "Cancel", IDCANCEL, 274, 201, 64, 20, WS_TABSTOP
+END

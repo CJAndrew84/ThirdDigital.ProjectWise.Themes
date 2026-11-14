@@ -22,8 +22,10 @@ namespace QuickAccess
 	constexpr std::size_t kInterfaceDialog = 15;
 	constexpr UINT kFirstNavigation = 210;
 	constexpr std::size_t kNavigationCount = 3;
+	constexpr UINT kFirstAdmin = 1200;
+	constexpr UINT kClassic = 230;
 
-	enum class Tab { Home, View, Search, Tools, Workflow };
+	enum class Tab { Home, View, Search, Tools, Workflow, Admin };
 	enum class DisplayMode { Expanded, Minimized, Hidden };
 	Tab ButtonTab(std::size_t button) noexcept;
 
@@ -68,6 +70,10 @@ namespace QuickAccess
 		bool (*executeWorkflow)(void* context, const WorkflowState& shown, UINT command) = nullptr;
 		bool (*refreshSelectors)(void* context, SelectorStates& selectors, bool force) = nullptr;
 		bool (*selectChoice)(void* context, Selector selector, const SelectorState& shown, std::size_t choice) = nullptr;
+		bool (*refreshAdmin)(void* context, ContextState& admin) = nullptr;
+		bool (*executeAdmin)(void* context, const ContextState& shown, UINT command) = nullptr;
+		bool (*restoreClassic)(void* context) = nullptr;
+		void (*failed)(void* context, const wchar_t* reason) = nullptr;
 	};
 
 	bool ReadMenuState(HMENU menu, UINT command, ButtonState& state) noexcept;
@@ -90,5 +96,7 @@ namespace QuickAccess
 	void Refresh(HWND window) noexcept;
 	bool Invoke(HWND window, UINT buttonId) noexcept;
 	bool InvokeWorkflow(HWND window, UINT buttonId) noexcept;
+	bool InvokeAdmin(HWND window, UINT buttonId) noexcept;
+	bool IsHealthy(HWND window) noexcept;
 	bool SelectChoice(HWND window, Selector selector, std::size_t choice) noexcept;
 }

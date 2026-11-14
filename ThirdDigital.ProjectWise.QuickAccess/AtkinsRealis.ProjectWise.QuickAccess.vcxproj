@@ -43,6 +43,9 @@
 	<ClCompile Include="src\Module.cpp" />
 	<ClCompile Include="src\QuickAccess.cpp" />
 	<ClCompile Include="src\Workflow.cpp" />
+	<ClCompile Include="src\Admin.cpp" />
+	<ClCompile Include="src\ClassicUi.cpp" />
+	<ResourceCompile Include="src\Admin.rc" />
 	<ClInclude Include="src\QuickAccess.h" />
 	<ClInclude Include="src\Workflow.h" />
 	<None Include="src\QuickAccess.def" />

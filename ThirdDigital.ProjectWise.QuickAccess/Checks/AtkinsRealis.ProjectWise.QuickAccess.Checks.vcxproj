@@ -38,6 +38,9 @@
 	<ClCompile Include="Checks.cpp" />
 	<ClCompile Include="..\src\QuickAccess.cpp" />
 	<ClCompile Include="..\src\Workflow.cpp" />
+	<ClCompile Include="..\src\Admin.cpp" />
+	<ClCompile Include="..\src\ClassicUi.cpp" />
+	<ResourceCompile Include="..\src\Admin.rc" />
 	<Manifest Include="app.manifest" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

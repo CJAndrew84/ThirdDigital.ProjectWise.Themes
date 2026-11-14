@@ -6,7 +6,7 @@
 
 namespace QuickAccess
 {
-	enum class WorkflowActionKind { Next, Previous, Change, Operation };
+	enum class WorkflowActionKind { Next, Previous, Change, Operation, NewUser, Users, SignIn };
 	struct WorkflowAction
 	{
 		UINT command = 0;
@@ -24,6 +24,9 @@ namespace QuickAccess
 		bool operator==(const WorkflowState&) const = default;
 	};
 	struct WorkflowMenuIds { UINT next, previous, change, setFinal, removeFinal; };
+	using ContextState = WorkflowState;
+	using ContextAction = WorkflowAction;
+	using ContextActionKind = WorkflowActionKind;
 	constexpr UINT kFirstWorkflow = 1000;
 	constexpr std::size_t kMaxWorkflowActions = 128;
 
