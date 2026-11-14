@@ -241,6 +241,16 @@ namespace QuickAccess::UserManagement
 			place(IDC_MANAGER_MEMBER_LABEL, right, lower, half, s(20)); place(IDC_MANAGER_PENDING_LABEL, right + half + gap, lower, half, s(20));
 			place(IDC_MANAGER_MEMBERS, right, lower + s(24), half, templateTop - lower - s(28));
 			place(IDC_MANAGER_PENDING, right + half + gap, lower + s(24), half, templateTop - lower - s(28));
+			// Keep the permission/action columns visible while long names use native label tips.
+			for (int id : {IDC_MANAGER_MEMBERS, IDC_MANAGER_PENDING})
+			{
+				const HWND view = Control(window, id); RECT client{}; GetClientRect(view, &client);
+				const int available = std::max(3, static_cast<int>(client.right) - s(4) - GetSystemMetricsForDpi(SM_CXVSCROLL, dpi));
+				const int last = std::min(s(76), available / 3), rest = available - last;
+				const int first = rest * (id == IDC_MANAGER_MEMBERS ? 48 : 40) / 100;
+				if (Header_GetItemCount(ListView_GetHeader(view)) == 3)
+				{ ListView_SetColumnWidth(view, 0, first); ListView_SetColumnWidth(view, 1, rest - first); ListView_SetColumnWidth(view, 2, last); }
+			}
 			place(IDC_MANAGER_TEMPLATE_LABEL, margin, templateTop, width, s(22));
 			x = 0; int y = buttonTop;
 			for (const auto& button : buttons) { if (x && x + s(button.second) > width) { x = 0; y += s(34); } place(button.first, margin + x, y, s(button.second), s(30)); x += s(button.second) + gap; }
@@ -302,7 +312,7 @@ namespace QuickAccess::UserManagement
 					RowSpacing(*window, dpi);
 					TreeView_SetItemHeight(Control(*window, IDC_MANAGER_TREE), MulDiv(24, dpi, 96));
 					Column(Control(*window, IDC_MANAGER_GRID), 0, L"User", MulDiv(180, dpi, 96)); Column(Control(*window, IDC_MANAGER_GRID), 1, L"Email", MulDiv(220, dpi, 96));
-					Column(Control(*window, IDC_MANAGER_MEMBERS), 0, L"Userlist (direct member)", MulDiv(210, dpi, 96)); Column(Control(*window, IDC_MANAGER_MEMBERS), 1, L"Current membership", MulDiv(150, dpi, 96)); Column(Control(*window, IDC_MANAGER_MEMBERS), 2, L"Editing", MulDiv(100, dpi, 96));
+					Column(Control(*window, IDC_MANAGER_MEMBERS), 0, L"Userlist", MulDiv(210, dpi, 96)); Column(Control(*window, IDC_MANAGER_MEMBERS), 1, L"Membership", MulDiv(150, dpi, 96)); Column(Control(*window, IDC_MANAGER_MEMBERS), 2, L"Editing", MulDiv(100, dpi, 96));
 					Column(Control(*window, IDC_MANAGER_PENDING), 0, L"User", MulDiv(160, dpi, 96)); Column(Control(*window, IDC_MANAGER_PENDING), 1, L"Userlist", MulDiv(200, dpi, 96)); Column(Control(*window, IDC_MANAGER_PENDING), 2, L"Change", MulDiv(85, dpi, 96));
 					MONITORINFO monitor{sizeof(monitor)}; GetMonitorInfoW(MonitorFromWindow(dialog, MONITOR_DEFAULTTONEAREST), &monitor);
 					SetWindowPos(dialog, nullptr, monitor.rcWork.left + 16, monitor.rcWork.top + 16,
