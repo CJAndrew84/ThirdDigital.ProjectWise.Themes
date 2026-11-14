@@ -410,6 +410,47 @@ namespace
 		return text;
 	}
 
+	bool SaveWorkflowPreview(HWND window, const wchar_t* path)
+	{
+		RECT client{};
+		GetClientRect(window, &client);
+		const int width = client.right, height = client.bottom;
+		if (width <= 0 || height <= 0) return false;
+		BITMAPINFO info{};
+		info.bmiHeader = {sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB};
+		void* pixels = nullptr;
+		HBITMAP bitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+		HDC dc = CreateCompatibleDC(nullptr);
+		if (bitmap == nullptr || dc == nullptr)
+		{
+			if (bitmap != nullptr) DeleteObject(bitmap);
+			if (dc != nullptr) DeleteDC(dc);
+			return false;
+		}
+		const auto old = SelectObject(dc, bitmap);
+		SetDCBrushColor(dc, GetSysColor(COLOR_BTNFACE));
+		FillRect(dc, &client, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+		SendMessageW(window, WM_PRINT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
+		GdiFlush();
+		BITMAPFILEHEADER header{};
+		header.bfType = 0x4D42;
+		header.bfOffBits = sizeof(header) + sizeof(BITMAPINFOHEADER);
+		const DWORD bytes = static_cast<DWORD>(width * height * 4);
+		header.bfSize = header.bfOffBits + bytes;
+		FILE* file = nullptr;
+		bool result = _wfopen_s(&file, path, L"wb") == 0 && file != nullptr;
+		if (result)
+		{
+			result = std::fwrite(&header, sizeof(header), 1, file) == 1 && std::fwrite(&info.bmiHeader, sizeof(BITMAPINFOHEADER), 1, file) == 1 &&
+				std::fwrite(pixels, bytes, 1, file) == 1;
+			result = std::fclose(file) == 0 && result;
+		}
+		SelectObject(dc, old);
+		DeleteObject(bitmap);
+		DeleteDC(dc);
+		return result;
+	}
+
 	void CheckAccessibility(HWND owner, HWND window, FakeHost& host, HWND address, HWND content)
 	{
 		using QuickAccess::DisplayMode;
@@ -906,7 +947,7 @@ namespace
 		DestroyWindow(content);
 	}
 
-	void CheckWorkflowRibbon(HWND owner)
+	void CheckWorkflowRibbon(HWND owner, const wchar_t* previewPath)
 	{
 		using QuickAccess::Tab;
 		using QuickAccess::DisplayMode;
@@ -967,6 +1008,7 @@ namespace
 			{806, L"Reject", true, Kind::Operation}, {807, L"Archive", true, Kind::Operation}, {808, L"Reopen", true, Kind::Operation}};
 		QuickAccess::Refresh(window);
 		page = CommandPage(window);
+		if (previewPath != nullptr) Expect(SaveWorkflowPreview(window, previewPath), L"native Workflow ribbon preview written");
 		Expect(GetDlgItem(page, QuickAccess::kFirstWorkflow + 7) != nullptr && AccessibleName(GetDlgItem(page, QuickAccess::kFirstWorkflow + 1)) == L"Approve & publish",
 			L"WRE changes replace standard buttons with all configured operations and preserve literal accessible labels");
 		Expect(!QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow + 2), L"disabled WRE operations remain non-executable");
@@ -1092,7 +1134,7 @@ int wmain(int argc, wchar_t* argv[])
 	const int expectedIcon = MulDiv(32, static_cast<int>(GetDpiForWindow(window)), 96);
 	Expect(width == expectedIcon && height == expectedIcon, L"icons are 32 logical pixels at the window DPI");
 	CheckCommandIcons(window, toolbar);
-	if (argc == 3 && wcscmp(argv[1], L"--preview") == 0)
+	if (argc >= 3 && wcscmp(argv[1], L"--preview") == 0)
 		Expect(SaveCommandPreview(window, toolbar, argv[2]), L"native enabled/disabled command preview written");
 	RECT rect{};
 	SendMessageW(toolbar, TB_GETITEMRECT, 0, reinterpret_cast<LPARAM>(&rect));
@@ -1147,7 +1189,7 @@ int wmain(int argc, wchar_t* argv[])
 	host.destroyOnSearch = searching;
 	Expect(QuickAccess::Search(searching) && !IsWindow(searching), L"ribbon destruction during search is safe");
 	CheckNavigation(owner);
-	CheckWorkflowRibbon(owner);
+	CheckWorkflowRibbon(owner, argc == 5 && wcscmp(argv[3], L"--workflow-preview") == 0 ? argv[4] : nullptr);
 	HWND keyboard = QuickAccess::Create(owner, instance, callbacks);
 	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;

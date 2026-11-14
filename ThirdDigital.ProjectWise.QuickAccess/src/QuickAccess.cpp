@@ -725,6 +725,13 @@ namespace QuickAccess
 			if (message == WM_COMMAND || message == WM_NOTIFY || message == WM_DRAWITEM)
 				return SendMessageW(window, message, wParam, lParam);
 			if (message == WM_ERASEBKGND) return 1;
+			if (message == WM_PRINTCLIENT && state != nullptr)
+			{
+				HDC dc = reinterpret_cast<HDC>(wParam);
+				if (panel == state->page) PaintGroups(panel, dc, *state);
+				else { RECT rect{}; GetClientRect(panel, &rect); Fill(dc, rect, GetSysColor(COLOR_BTNFACE)); }
+				return 0;
+			}
 			if (message == WM_PAINT && state != nullptr)
 			{
 				PAINTSTRUCT paint{};
