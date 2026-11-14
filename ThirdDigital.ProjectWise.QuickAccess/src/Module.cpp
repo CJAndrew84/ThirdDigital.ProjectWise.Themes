@@ -701,8 +701,14 @@ namespace
 			{ error = L"The datasource or administrative session changed. Reopen New User."; return false; }
 			LONG id = 0;
 			// The server remains authoritative for Restricted Administrator Users-node permissions and uniqueness.
+			// The public single-identity compatibility call also sets the chosen type and credentials.
+			// CreateUser3 alone creates only the account record; the newer identity-management exports are not public SDK declarations.
+			static_assert(QuickAccess::kMaxLogicalPasswordLength == AAAPI_MAX_CLEARTEXT_PASSWORD_LEN);
+			const bool federated = user.type == QuickAccess::AccountType::Federated;
 			aaApi_RemoveLastError();
-			if (!aaApi_CreateUser3(&id, user.name.c_str(), user.description.empty() ? nullptr : user.description.c_str(), user.email.empty() ? nullptr : user.email.c_str()))
+			if (!aaApi_CreateUser2(&id, federated ? AADMS_STSUSER : AADMS_DMSUSER, nullptr, user.name.c_str(),
+				federated ? nullptr : user.password.c_str(), user.description.empty() ? nullptr : user.description.c_str(),
+				user.email.empty() ? nullptr : user.email.c_str(), federated ? user.email.c_str() : nullptr))
 			{
 				const LONG code = aaApi_GetLastErrorId();
 				const LPCWSTR nativeMessage = aaApi_GetLastErrorMessage();

@@ -784,53 +784,150 @@ namespace
 		Expect(Create(owner, GetModuleHandleW(nullptr), callbacks) == nullptr && IsWindowEnabled(owner), L"a throwing creation callback leaves the host UI usable");
 	}
 
-	struct DialogFixture { HWND owner = nullptr; unsigned calls = 0, ticks = 0; bool cancel = false; };
+	enum class UserDialogMode { Federated, Logical, Cancel, Throw };
+	struct DialogFixture
+	{
+		HWND owner = nullptr; unsigned calls = 0, ticks = 0;
+		UserDialogMode mode = UserDialogMode::Federated;
+		const wchar_t* preview = nullptr;
+	};
 	DialogFixture* g_dialogFixture = nullptr;
 	bool CreateFixtureUser(void* context, const QuickAccess::ContextState&, const QuickAccess::NewUser& user, std::wstring& error)
 	{
+		using namespace QuickAccess;
 		auto& fixture = *static_cast<DialogFixture*>(context); ++fixture.calls;
+		const auto calls = fixture.calls;
+		HWND dialog = GetLastActivePopup(fixture.owner);
+		SendMessageW(dialog, WM_COMMAND, IDOK, 0); SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+		Expect(fixture.calls == calls && !IsWindowEnabled(GetDlgItem(dialog, IDOK)), L"creation in progress blocks nested submissions and cancellation");
+		if (fixture.mode == UserDialogMode::Throw) throw 1;
+		if (fixture.mode == UserDialogMode::Logical)
+			Expect(user.type == AccountType::Logical && user.password == L"Fixture P@ssword 42!" && user.confirmation == user.password,
+				L"logical submission passes the exact confirmed password and selected type to the callback");
+		else Expect(user.type == AccountType::Federated && user.password.empty() && user.confirmation.empty() && user.email == L"fixture@example.test",
+			L"federated submission passes the identity email without a logical password");
 		if (user.name == L"rejected") { error = L"Server rejected this account."; return false; }
 		return user.name == L"fixture.user" && user.email == L"fixture@example.test";
 	}
+	void SelectUserType(HWND dialog, QuickAccess::AccountType type)
+	{
+		SendDlgItemMessageW(dialog, IDC_USER_TYPE, CB_SETCURSEL, static_cast<WPARAM>(type), 0);
+		SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDC_USER_TYPE, CBN_SELCHANGE), reinterpret_cast<LPARAM>(GetDlgItem(dialog, IDC_USER_TYPE)));
+	}
+	void FillFixturePassword(HWND dialog)
+	{
+		SetDlgItemTextW(dialog, IDC_USER_PASSWORD, L"Fixture P@ssword 42!");
+		SetDlgItemTextW(dialog, IDC_USER_CONFIRMATION, L"Fixture P@ssword 42!");
+	}
 	void CALLBACK DriveUserDialog(HWND, UINT, UINT_PTR, DWORD)
 	{
+		using namespace QuickAccess;
 		auto& fixture = *g_dialogFixture;
 		HWND dialog = GetLastActivePopup(fixture.owner);
 		if (GetDlgItem(dialog, IDC_USER_NAME) == nullptr) return;
-		if (fixture.cancel || ++fixture.ticks > 10) { SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0); return; }
+		if (++fixture.ticks > 1) { SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0); return; }
+		Expect(SendDlgItemMessageW(dialog, IDC_USER_TYPE, CB_GETCURSEL, 0, 0) == 0 && !IsWindowVisible(GetDlgItem(dialog, IDC_USER_PASSWORD)),
+			L"New User defaults to federated identity and hides logical credentials");
+		Expect(GetNextDlgTabItem(dialog, GetDlgItem(dialog, IDC_USER_EMAIL), FALSE) != GetDlgItem(dialog, IDC_USER_PASSWORD) &&
+			AccessibleName(GetDlgItem(dialog, IDC_USER_EMAIL)).find(L"Identity") != std::wstring::npos,
+			L"federated keyboard traversal skips password controls and announces the identity email label");
+		if (fixture.mode != UserDialogMode::Federated)
+		{
+			RECT federated{}; GetWindowRect(dialog, &federated);
+			SelectUserType(dialog, AccountType::Logical);
+			RECT logical{}; GetWindowRect(dialog, &logical);
+			Expect(IsWindowVisible(GetDlgItem(dialog, IDC_USER_PASSWORD)) && logical.bottom - logical.top > federated.bottom - federated.top &&
+				SendDlgItemMessageW(dialog, IDC_USER_PASSWORD, EM_GETPASSWORDCHAR, 0, 0) != 0 &&
+				SendDlgItemMessageW(dialog, IDC_USER_CONFIRMATION, EM_GETPASSWORDCHAR, 0, 0) != 0,
+				L"logical mode expands the form and masks both password fields");
+			Expect(GetNextDlgTabItem(dialog, GetDlgItem(dialog, IDC_USER_EMAIL), FALSE) == GetDlgItem(dialog, IDC_USER_PASSWORD) &&
+				GetNextDlgTabItem(dialog, GetDlgItem(dialog, IDC_USER_PASSWORD), FALSE) == GetDlgItem(dialog, IDC_USER_CONFIRMATION) &&
+				AccessibleName(GetDlgItem(dialog, IDC_USER_EMAIL)).find(L"Contact") != std::wstring::npos,
+				L"logical keyboard order reaches both credentials and the contact email has the correct accessible label");
+			FillFixturePassword(dialog); SelectUserType(dialog, AccountType::Federated);
+			Expect(GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_PASSWORD)) == 0 && GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_CONFIRMATION)) == 0 &&
+				!IsWindowEnabled(GetDlgItem(dialog, IDC_USER_PASSWORD)), L"changing to federated mode clears and disables logical credentials");
+			SelectUserType(dialog, AccountType::Logical);
+			if (fixture.mode == UserDialogMode::Cancel)
+			{ FillFixturePassword(dialog); SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0); return; }
+		}
 		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
 		Expect(fixture.calls == 0, L"blank New User submissions do not reach the creation callback");
-		SetDlgItemTextW(dialog, IDC_USER_NAME, L"rejected"); SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+		SetDlgItemTextW(dialog, IDC_USER_NAME, L"rejected");
+		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+		Expect(fixture.calls == 0, L"missing identity or password prevents creation before any native callback");
+		SetDlgItemTextW(dialog, IDC_USER_EMAIL, L"fixture@example.test");
+		if (fixture.mode != UserDialogMode::Federated) FillFixturePassword(dialog);
+		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
 		Expect(fixture.calls == 1 && IsWindow(dialog) && GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_STATUS)) > 0, L"server rejection keeps New User open with an inline error");
+		Expect(GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_PASSWORD)) == 0 && GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_CONFIRMATION)) == 0 &&
+			IsWindowEnabled(GetDlgItem(dialog, IDOK)) && IsWindowEnabled(GetDlgItem(dialog, IDCANCEL)),
+			L"server errors and throwing callbacks clear password controls and restore usable dialog buttons");
+		if (fixture.mode == UserDialogMode::Throw) { SendMessageW(dialog, WM_CLOSE, 0, 0); return; }
 		SetDlgItemTextW(dialog, IDC_USER_NAME, L"fixture.user"); SetDlgItemTextW(dialog, IDC_USER_EMAIL, L"fixture@example.test");
+		SetDlgItemTextW(dialog, IDC_USER_DESCRIPTION, L"Design coordination user");
+		SetDlgItemTextW(dialog, IDC_USER_STATUS, L"");
+		if (fixture.mode == UserDialogMode::Logical) FillFixturePassword(dialog);
+		if (fixture.preview != nullptr) Expect(SaveRibbonPreview(dialog, fixture.preview), L"native account-type form preview written using fake account data");
 		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
 	}
-	void CheckUserDialog(HWND owner)
+	void CheckUserDialog(HWND owner, const wchar_t* federatedPreview, const wchar_t* logicalPreview)
 	{
 		using namespace QuickAccess;
 		std::wstring error;
-		Expect(!ValidateNewUser({L"   ", L"", L""}, error) && !error.empty(), L"New User validates a nonblank account name");
-		Expect(!ValidateNewUser({L"bad\nname", L"", L""}, error), L"New User rejects control characters in account names");
+		NewUser user;
+		Expect(user.type == AccountType::Federated, L"new accounts prefer federated identity by default");
+		user.name = L"   ";
+		Expect(!ValidateNewUser(user, error) && !error.empty(), L"New User validates a nonblank account name");
+		user.name = L"bad\nname";
+		Expect(!ValidateNewUser(user, error), L"New User rejects control characters in account names");
+		user.name = L"fixture.user";
+		int field = 0;
+		Expect(!ValidateNewUser(user, error, &field) && field == IDC_USER_EMAIL, L"federated accounts require an identity email");
+		for (const auto* email : {L"no-at", L"@example.test", L"user@", L"user@@example.test", L"two@example.test;other@example.test", L"user@example.test\n"})
+		{
+			user.email = email;
+			Expect(!ValidateNewUser(user, error), L"invalid federated identity email is refused");
+		}
+		user.email = L"fixture@example.test";
+		Expect(ValidateNewUser(user, error), L"federated accounts accept an identity email without a ProjectWise password");
+		user.password = L"unexpected";
+		Expect(!ValidateNewUser(user, error), L"a federated request cannot accidentally include logical credentials");
+		user.ClearCredentials(); user.type = static_cast<AccountType>(42);
+		Expect(!ValidateNewUser(user, error), L"unknown account types are rejected");
+		user.type = AccountType::Logical; user.email.clear();
+		Expect(!ValidateNewUser(user, error, &field) && field == IDC_USER_PASSWORD, L"logical accounts require a password even without a contact email");
+		user.password = L"Fixture P@ssword 42!"; user.confirmation = L"different";
+		Expect(!ValidateNewUser(user, error), L"logical accounts reject mismatched password confirmation");
+		user.confirmation = user.password;
+		Expect(ValidateNewUser(user, error), L"logical accounts accept a confirmed password without an optional contact email");
+		user.password = user.confirmation = std::wstring(kMaxLogicalPasswordLength, L'x');
+		Expect(ValidateNewUser(user, error), L"logical passwords accept the SDK maximum length");
+		user.password += L'x'; user.confirmation = user.password;
+		Expect(!ValidateNewUser(user, error), L"overlong logical passwords are rejected rather than silently truncated");
+		user.password = user.confirmation = std::wstring(L"ab\0cd", 5);
+		Expect(!ValidateNewUser(user, error), L"embedded nulls cannot shorten a password at the native API boundary");
+		user.password = user.confirmation = L"  Fixture \u00a3 password  ";
+		Expect(ValidateNewUser(user, error), L"password whitespace and Unicode are preserved for server policy validation");
 		const auto nativeError = UserCreationError(58004, L"Invalid data", L"Datasource policy requires an authentication identity.");
 		Expect(nativeError.find(L"58004") != std::wstring::npos && nativeError.find(L"authentication identity") != std::wstring::npos,
 			L"New User retains the native error code, message and extended server detail");
 		Expect(UserCreationError(58004, L"", L"").find(L"does not identify a permissions problem") != std::wstring::npos,
 			L"generic invalid-data errors are not misreported as proven permissions failures");
 		const auto shown = AdminContext(L"datasource/user/session", true, false, true);
-		DialogFixture fixture{owner}; g_dialogFixture = &fixture;
-		const UINT_PTR timer = SetTimer(nullptr, 0, 50, DriveUserDialog);
-		Expect(timer != 0, L"native New User dialog driver available");
-		if (timer == 0) return;
-		const auto result = ShowNewUserDialog(owner, GetModuleHandleW(nullptr), shown, L"Test datasource", &fixture, CreateFixtureUser);
-		KillTimer(nullptr, timer);
-		Expect(result == IDOK && fixture.calls == 2 && IsWindowEnabled(owner), L"native New User dialog submits valid fields and restores owner activation");
-		fixture = {owner}; fixture.cancel = true;
-		const UINT_PTR cancelTimer = SetTimer(nullptr, 0, 50, DriveUserDialog);
-		if (cancelTimer != 0)
+		for (const auto mode : {UserDialogMode::Federated, UserDialogMode::Logical, UserDialogMode::Cancel, UserDialogMode::Throw})
 		{
-			const auto cancelled = ShowNewUserDialog(owner, GetModuleHandleW(nullptr), shown, L"Test datasource", &fixture, CreateFixtureUser);
-			KillTimer(nullptr, cancelTimer);
-			Expect(cancelled == IDCANCEL && fixture.calls == 0, L"cancelling New User creates no account");
+			DialogFixture fixture{owner}; fixture.mode = mode;
+			fixture.preview = mode == UserDialogMode::Federated ? federatedPreview : mode == UserDialogMode::Logical ? logicalPreview : nullptr;
+			g_dialogFixture = &fixture;
+			const UINT_PTR timer = SetTimer(nullptr, 0, 50, DriveUserDialog);
+			Expect(timer != 0, L"native New User dialog driver available");
+			if (timer == 0) continue;
+			const auto result = ShowNewUserDialog(owner, GetModuleHandleW(nullptr), shown, L"Test datasource", &fixture, CreateFixtureUser);
+			KillTimer(nullptr, timer);
+			const bool creates = mode == UserDialogMode::Federated || mode == UserDialogMode::Logical;
+			Expect(result == (creates ? IDOK : IDCANCEL) && fixture.calls == (creates ? 2U : mode == UserDialogMode::Throw ? 1U : 0U) && IsWindowEnabled(owner),
+				L"native New User restores owner activation after successful creation, cancellation or a callback exception");
 		}
 		g_dialogFixture = nullptr;
 	}
@@ -1635,7 +1732,8 @@ int wmain(int argc, wchar_t* argv[])
 	CheckVersionsToggle(owner, argc >= 7 && wcscmp(argv[5], L"--view-preview") == 0 ? argv[6] : nullptr);
 	CheckSelectors(owner, argc >= 9 && wcscmp(argv[7], L"--selectors-preview") == 0 ? argv[8] : nullptr);
 	CheckAdminAndRecovery(owner, argc >= 11 && wcscmp(argv[9], L"--admin-preview") == 0 ? argv[10] : nullptr);
-	CheckUserDialog(owner);
+	CheckUserDialog(owner, argc >= 17 && wcscmp(argv[15], L"--new-user-preview") == 0 ? argv[16] : nullptr,
+		argc >= 19 && wcscmp(argv[17], L"--logical-user-preview") == 0 ? argv[18] : nullptr);
 	CheckClassicRestoration();
 	CheckVersionStacks(argc >= 13 && wcscmp(argv[11], L"--stacks-preview") == 0 ? argv[12] : nullptr, Expect, SaveRibbonPreview);
 	CheckNotifications(owner, argc >= 15 && wcscmp(argv[13], L"--notification-preview") == 0 ? argv[14] : nullptr, Expect, SaveRibbonPreview);
