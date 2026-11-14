@@ -85,14 +85,14 @@ namespace QuickAccess::VersionStacks
 		void Annotate(State& state, HWND control, DWORD child, MSAAPROPID property, const std::wstring& value)
 		{
 			if (state.accessibility)
-				state.accessibility->SetHwndPropStr(control, OBJID_CLIENT, child, property, value.c_str());
+				state.accessibility->SetHwndPropStr(control, static_cast<DWORD>(OBJID_CLIENT), child, property, value.c_str());
 		}
 		void ClearAnnotations(State& state)
 		{
 			if (!state.accessibility) return;
 			const MSAAPROPID properties[]{PROPID_ACC_NAME, PROPID_ACC_DESCRIPTION};
 			for (std::size_t i = 0; i < state.visible.size(); ++i)
-				state.accessibility->ClearHwndProps(state.list, OBJID_CLIENT, static_cast<DWORD>(i + 1), properties, ARRAYSIZE(properties));
+				state.accessibility->ClearHwndProps(state.list, static_cast<DWORD>(OBJID_CLIENT), static_cast<DWORD>(i + 1), properties, ARRAYSIZE(properties));
 		}
 		std::size_t FocusedRow(const State& state)
 		{

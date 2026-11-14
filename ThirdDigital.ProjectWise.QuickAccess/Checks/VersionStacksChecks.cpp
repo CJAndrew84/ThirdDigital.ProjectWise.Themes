@@ -46,7 +46,7 @@ namespace
 	std::wstring Accessible(HWND list, LONG child, bool description)
 	{
 		IAccessible* accessible = nullptr;
-		if (FAILED(AccessibleObjectFromWindow(list, OBJID_CLIENT, IID_IAccessible, reinterpret_cast<void**>(&accessible)))) return {};
+		if (FAILED(AccessibleObjectFromWindow(list, static_cast<DWORD>(OBJID_CLIENT), IID_IAccessible, reinterpret_cast<void**>(&accessible)))) return {};
 		VARIANT target{}; target.vt = VT_I4; target.lVal = child;
 		BSTR text = nullptr;
 		if (description) accessible->get_accDescription(target, &text); else accessible->get_accName(target, &text);
