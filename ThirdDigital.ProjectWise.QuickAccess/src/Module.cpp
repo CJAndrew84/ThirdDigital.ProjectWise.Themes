@@ -8,6 +8,7 @@
 #include "QuickAccess.h"
 #include "Admin.h"
 #include "ClassicUi.h"
+#include "VersionStacksAdapter.h"
 
 #include <array>
 #include <cwchar>
@@ -713,6 +714,7 @@ namespace
 	bool RecoverClassic(const wchar_t* reason, bool interactive = false)
 	{
 		g_classicPreferred = true; g_ribbonExpected = false;
+		QuickAccess::SetVersionStacksAvailable(false);
 		if (!QuickAccess::SaveClassicUiPreference(true)) Report(L"could not persist Classic UI preference");
 		if (g_startupTimer != 0) { KillTimer(nullptr, g_startupTimer); g_startupTimer = 0; }
 		if (IsWindow(g_window)) { QuickAccess::Dock(g_window, false); DestroyWindow(g_window); }
@@ -758,6 +760,7 @@ namespace
 			Report(L"Explorer's content pane is not ready for docking");
 		}
 		g_ribbonExpected = g_window != nullptr;
+		if (g_ribbonExpected) QuickAccess::SetVersionStacksAvailable(true);
 		return g_window != nullptr;
 	}
 
@@ -871,6 +874,8 @@ namespace
 		if (!AddVisibilityCommand(AAMENU_TOOLS, L"Re-enable Classic UI", g_classicCommand, true) ||
 			!AddVisibilityCommand(AAMENU_TOOLS, L"Quick Access Toolbar", g_toggleCommand) ||
 			!AddVisibilityCommand(AAMENU_VIEW, L"Ribbon", g_viewCommand)) { RecoverClassic(L"ribbon menu registration failed"); return false; }
+		if (!QuickAccess::RegisterVersionStacks(g_instance, !g_classicPreferred))
+			Report(L"optional Version stacks view unavailable; native document list retained");
 		g_healthTimer = SetTimer(nullptr, 0, 1000, CheckRibbon);
 		if (g_healthTimer == 0) { RecoverClassic(L"ribbon health monitoring unavailable"); return false; }
 		g_startupTimer = SetTimer(nullptr, 0, 250, Startup);

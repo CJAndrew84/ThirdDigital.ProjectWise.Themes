@@ -13,6 +13,8 @@
 #include <vector>
 #include <algorithm>
 
+void CheckVersionStacks(const wchar_t* preview, void (*expect)(bool, const wchar_t*), bool (*save)(HWND, const wchar_t*));
+
 namespace
 {
 	int g_failures = 0;
@@ -1615,6 +1617,7 @@ int wmain(int argc, wchar_t* argv[])
 	CheckAdminAndRecovery(owner, argc >= 11 && wcscmp(argv[9], L"--admin-preview") == 0 ? argv[10] : nullptr);
 	CheckUserDialog(owner);
 	CheckClassicRestoration();
+	CheckVersionStacks(argc >= 13 && wcscmp(argv[11], L"--stacks-preview") == 0 ? argv[12] : nullptr, Expect, SaveRibbonPreview);
 	HWND keyboard = QuickAccess::Create(owner, instance, callbacks);
 	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;

@@ -55,7 +55,7 @@ jobs:
       - name: Run native keyboard, accessibility, layout and icon checks
         shell: pwsh
         run: |
-          & ./ThirdDigital.ProjectWise.QuickAccess/Checks/out/Win32/Release/bin/AtkinsRealis.ProjectWise.QuickAccess.Checks.exe --preview "$env:RUNNER_TEMP/QuickAccess-icons.bmp" --workflow-preview "$env:RUNNER_TEMP/QuickAccess-workflow.bmp" --view-preview "$env:RUNNER_TEMP/QuickAccess-view.bmp" --selectors-preview "$env:RUNNER_TEMP/QuickAccess-selectors.bmp" --admin-preview "$env:RUNNER_TEMP/QuickAccess-admin.bmp"
+          & ./ThirdDigital.ProjectWise.QuickAccess/Checks/out/Win32/Release/bin/AtkinsRealis.ProjectWise.QuickAccess.Checks.exe --preview "$env:RUNNER_TEMP/QuickAccess-icons.bmp" --workflow-preview "$env:RUNNER_TEMP/QuickAccess-workflow.bmp" --view-preview "$env:RUNNER_TEMP/QuickAccess-view.bmp" --selectors-preview "$env:RUNNER_TEMP/QuickAccess-selectors.bmp" --admin-preview "$env:RUNNER_TEMP/QuickAccess-admin.bmp" --stacks-preview "$env:RUNNER_TEMP/QuickAccess-stacks.bmp"
           $checksResult = $LASTEXITCODE
           Add-Type -AssemblyName System.Drawing
           foreach ($image in Get-ChildItem "$env:RUNNER_TEMP/QuickAccess-*.bmp") {
