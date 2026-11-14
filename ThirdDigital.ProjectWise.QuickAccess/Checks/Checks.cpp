@@ -14,6 +14,7 @@
 #include <algorithm>
 
 void CheckVersionStacks(const wchar_t* preview, void (*expect)(bool, const wchar_t*), bool (*save)(HWND, const wchar_t*));
+void CheckNotifications(HWND owner, const wchar_t* preview, void (*expect)(bool, const wchar_t*), bool (*save)(HWND, const wchar_t*));
 
 namespace
 {
@@ -293,6 +294,14 @@ namespace
 		Expect(!QuickAccess::ReadWorkflowMenu(root, ids, true, result) && result.actions.empty(), L"ambiguous duplicate workflow IDs fail closed");
 		DestroyMenu(root);
 		Expect(!QuickAccess::ReadWorkflowMenu(nullptr, ids, true, result) && result.actions.empty(), L"missing workflow menus do not fabricate operations");
+		root = CreatePopupMenu(); state = CreatePopupMenu();
+		AppendMenuW(state, MF_STRING, 801, L"Server-side WRE approval");
+		MENUITEMINFOW parent{sizeof(parent)}; parent.fMask = MIIM_ID | MIIM_SUBMENU | MIIM_STRING;
+		parent.wID = ids.change; parent.hSubMenu = state; parent.dwTypeData = const_cast<LPWSTR>(L"Native change-state branch");
+		InsertMenuItemW(root, 0, TRUE, &parent);
+		Expect(QuickAccess::ReadWorkflowMenu(root, ids, true, result) && result.rulesEngine && result.actions.size() == 1 && result.actions[0].command == 801,
+			L"WRE-only menus remain discoverable when every standard transition leaf is replaced");
+		DestroyMenu(root);
 	}
 
 	void CheckNavigationAvailability()
@@ -802,6 +811,11 @@ namespace
 		std::wstring error;
 		Expect(!ValidateNewUser({L"   ", L"", L""}, error) && !error.empty(), L"New User validates a nonblank account name");
 		Expect(!ValidateNewUser({L"bad\nname", L"", L""}, error), L"New User rejects control characters in account names");
+		const auto nativeError = UserCreationError(58004, L"Invalid data", L"Datasource policy requires an authentication identity.");
+		Expect(nativeError.find(L"58004") != std::wstring::npos && nativeError.find(L"authentication identity") != std::wstring::npos,
+			L"New User retains the native error code, message and extended server detail");
+		Expect(UserCreationError(58004, L"", L"").find(L"does not identify a permissions problem") != std::wstring::npos,
+			L"generic invalid-data errors are not misreported as proven permissions failures");
 		const auto shown = AdminContext(L"datasource/user/session", true, false, true);
 		DialogFixture fixture{owner}; g_dialogFixture = &fixture;
 		const UINT_PTR timer = SetTimer(nullptr, 0, 50, DriveUserDialog);
@@ -1452,7 +1466,11 @@ namespace
 		QuickAccess::SelectTab(window, Tab::Workflow);
 		EnableWindow(owner, FALSE);
 		Expect(!QuickAccess::HandleKey(window, VK_RETURN) && !QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow), L"modal Explorer blocks workflow shortcuts and execution");
+		QuickAccess::Refresh(window);
+		Expect(QuickAccess::SelectedTab(window) == Tab::Workflow && TabCtrl_GetItemCount(tabs) == 5,
+			L"an external modal ProjectWise dialog disables workflow actions without removing or closing the selected tab");
 		EnableWindow(owner, TRUE);
+		QuickAccess::Refresh(window);
 		QuickAccess::SetDisplayMode(window, DisplayMode::Minimized);
 		QuickAccess::SelectTab(window, Tab::Workflow);
 		SetFocus(tabs);
@@ -1464,6 +1482,7 @@ namespace
 			L"losing the workflow removes its tab and popup and returns focus to Home tabs");
 		Expect(!QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow), L"removed workflow controls cannot dispatch");
 		host.workflow = {true, false, L"folder with no selected documents", {}};
+		host.workflow.status = L"The folder has a workflow. Select documents to see available actions.";
 		QuickAccess::Refresh(window);
 		Expect(QuickAccess::SelectTab(window, Tab::Workflow) && GetDlgItem(page, QuickAccess::kFirstWorkflow) == nullptr,
 			L"a workflow folder without a document selection exposes no executable document actions");
@@ -1618,6 +1637,7 @@ int wmain(int argc, wchar_t* argv[])
 	CheckUserDialog(owner);
 	CheckClassicRestoration();
 	CheckVersionStacks(argc >= 13 && wcscmp(argv[11], L"--stacks-preview") == 0 ? argv[12] : nullptr, Expect, SaveRibbonPreview);
+	CheckNotifications(owner, argc >= 15 && wcscmp(argv[13], L"--notification-preview") == 0 ? argv[14] : nullptr, Expect, SaveRibbonPreview);
 	HWND keyboard = QuickAccess::Create(owner, instance, callbacks);
 	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;

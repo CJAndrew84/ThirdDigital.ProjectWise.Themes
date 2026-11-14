@@ -37,11 +37,14 @@
   <ItemGroup>
 	<ClCompile Include="Checks.cpp" />
 	<ClCompile Include="VersionStacksChecks.cpp" />
+	<ClCompile Include="NotificationChecks.cpp" />
 	<ClCompile Include="..\src\QuickAccess.cpp" />
 	<ClCompile Include="..\src\Workflow.cpp" />
 	<ClCompile Include="..\src\Admin.cpp" />
 	<ClCompile Include="..\src\ClassicUi.cpp" />
 	<ClCompile Include="..\src\VersionStacks.cpp" />
+	<ClCompile Include="..\src\Notifications.cpp" />
+	<ResourceCompile Include="..\src\Notifications.rc" />
 	<ResourceCompile Include="..\src\Admin.rc" />
 	<Manifest Include="app.manifest" />
   </ItemGroup>

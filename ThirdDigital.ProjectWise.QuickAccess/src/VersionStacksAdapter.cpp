@@ -9,6 +9,7 @@
 #include "VersionStacksAdapter.h"
 #include "VersionStacks.h"
 #include "QuickAccess.h"
+#include "NotificationAdapter.h"
 
 #include <algorithm>
 #include <map>
@@ -291,6 +292,8 @@ namespace QuickAccess
 				if (!FocusVersionStacks(container)) SetFocus(container);
 				if (GetFocus() != container && !IsChild(container, GetFocus()) && VersionStacksListFromFocus(GetFocus()) != container) return false;
 				if (!ValidateSelection(shown)) return false;
+				const auto notification = BeginWorkflowNotification(command);
+				struct Notification { std::uint64_t token; ~Notification() { EndWorkflowNotification(token); } } notify{notification};
 				// Native list/view commands can appear inside the Document popup. Only document commands take a document array.
 				if (documents && aaApi_GetCommandType(static_cast<LONG>(command)) == AAMENU_DOCUMENT)
 				{

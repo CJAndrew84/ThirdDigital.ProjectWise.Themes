@@ -47,6 +47,12 @@
 	<ClCompile Include="src\ClassicUi.cpp" />
 	<ClCompile Include="src\VersionStacks.cpp" />
 	<ClCompile Include="src\VersionStacksAdapter.cpp" />
+	<ClCompile Include="src\Notifications.cpp" />
+	<ClCompile Include="src\NotificationAdapter.cpp" />
+	<ClInclude Include="src\Notifications.h" />
+	<ClInclude Include="src\NotificationAdapter.h" />
+	<ClInclude Include="src\NotificationResources.h" />
+	<ResourceCompile Include="src\Notifications.rc" />
 	<ClInclude Include="src\VersionStacks.h" />
 	<ClInclude Include="src\VersionStacksAdapter.h" />
 	<ResourceCompile Include="src\Admin.rc" />

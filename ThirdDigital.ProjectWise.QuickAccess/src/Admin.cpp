@@ -24,6 +24,16 @@ namespace QuickAccess
 		{ error = L"Enter a user name. ProjectWise validates account names and uniqueness."; return false; }
 		error.clear(); return true;
 	}
+	std::wstring UserCreationError(LONG code, const std::wstring& message, const std::wstring& detail)
+	{
+		std::wstring result = L"ProjectWise did not create the account" + (code ? L" (error " + std::to_wstring(code) + L")." : std::wstring(L"."));
+		if (!message.empty()) result += L"\r\n" + message;
+		if (!detail.empty() && detail != message) result += L"\r\n" + detail;
+		if (message.empty() && detail.empty()) result += code == 58004 ?
+			L"\r\nThe SDK reported invalid data. This code alone does not identify a permissions problem. Check this datasource's account/identity requirements." :
+			L"\r\nThe SDK returned no additional detail. Check the administrative session and datasource account policy.";
+		return result;
+	}
 
 	namespace
 	{
@@ -55,7 +65,7 @@ namespace QuickAccess
 				NewUser user{Value(dialog, IDC_USER_NAME), Value(dialog, IDC_USER_DESCRIPTION), Value(dialog, IDC_USER_EMAIL)};
 				std::wstring error;
 				if (ValidateNewUser(user, error) && state->create(state->context, state->shown, user, error)) { EndDialog(dialog, IDOK); return TRUE; }
-				SetDlgItemTextW(dialog, IDC_USER_STATUS, error.empty() ? L"ProjectWise did not create the account. Check your session and Users permissions." : error.c_str());
+				SetDlgItemTextW(dialog, IDC_USER_STATUS, error.empty() ? L"ProjectWise did not create the account. No detailed error was returned." : error.c_str());
 				NotifyWinEvent(EVENT_SYSTEM_ALERT, dialog, OBJID_CLIENT, CHILDID_SELF);
 				SetFocus(GetDlgItem(dialog, IDC_USER_NAME));
 				return TRUE;

@@ -9,6 +9,7 @@
 #include "Admin.h"
 #include "ClassicUi.h"
 #include "VersionStacksAdapter.h"
+#include "NotificationAdapter.h"
 
 #include <array>
 #include <cwchar>
@@ -553,18 +554,34 @@ namespace
 		}
 		selection.workflow = g_workflowId;
 		if (selection.workflow <= 0) return true;
+		result.visible = true; // Folder context controls visibility; selection controls action availability.
+		result.context = std::to_wstring(reinterpret_cast<UINT_PTR>(selection.source)) + L"/" + std::to_wstring(aaApi_GetCurrentUserId()) +
+			L"/" + std::to_wstring(selection.folder) + L"/" + std::to_wstring(selection.workflow);
 		const HWND listControl = aaApi_GetDocumentListCtrl(selection.list);
-		if (!IsWindow(listControl)) return false;
+		if (!IsWindow(listControl)) { result.status = L"Document selection is unavailable. Reselect the folder or refresh."; return true; }
+		if (ListView_GetSelectedCount(listControl) > 256) { result.status = L"Select up to 256 documents for ribbon workflow actions."; return true; }
 		std::vector<std::wstring> identities;
 		for (int index = ListView_GetNextItem(listControl, -1, LVNI_SELECTED); index != -1; index = ListView_GetNextItem(listControl, index, LVNI_SELECTED))
 		{
 			AADOCLIST_ITEM item{};
 			item.iItem = index;
 			item.ulMask = AADOCITEM_PROJECTNO | AADOCITEM_DOCNO | AADOCITEM_FLAGS | AADOCITEM_VERSIONSEQ;
-			if (!aaApi_DocListGetItem(selection.list, &item)) return false;
-			// A mixed folder/document/non-workflow selection must not operate on an undisclosed subset.
-			if (item.lDocumentId <= 0 || item.lProjectId != selection.folder || (item.ulFlags & AADOCIF_WORKFL) == 0) return true;
-			selection.documents.push_back({item.lProjectId, item.lDocumentId});
+			if (!aaApi_DocListGetItem(selection.list, &item)) { result.status = L"The selection is changing. Select documents again."; return true; }
+			if (item.lDocumentId <= 0 || item.lProjectId != selection.folder)
+			{ result.status = L"Select documents in the current workflow folder; mixed folder/document selections are unavailable."; selection.documents.clear(); return true; }
+			// AADOCIF_WORKFL is a display hint, not a reliable assignment/permission test for every list implementation.
+			// Native menus decide availability; invocation additionally verifies actual document workflow metadata.
+			if (force)
+			{
+				OwnedBuffer document{aaApi_SelectDocumentDataBuffer(item.lProjectId, item.lDocumentId)};
+				if (!document.value || aaApi_DmsDataBufferGetCount(document.value) != 1 ||
+					aaApi_DmsDataBufferGetNumericProperty(document.value, DOC_PROP_WORKFLOWID, 0) != selection.workflow ||
+					aaApi_DmsDataBufferGetNumericProperty(document.value, DOC_PROP_VERSIONNO, 0) != item.versionSeq)
+				{ result.status = L"A selected document has no matching workflow, changed version or cannot be read. Refresh and select it again."; selection.documents.clear(); return true; }
+			}
+			if (std::none_of(selection.documents.begin(), selection.documents.end(), [&](const auto& document) {
+				return document.lProjectId == item.lProjectId && document.lDocumentId == item.lDocumentId; }))
+				selection.documents.push_back({item.lProjectId, item.lDocumentId});
 			identities.push_back(std::to_wstring(item.lProjectId) + L":" + std::to_wstring(item.lDocumentId) + L":" +
 				std::to_wstring(item.versionSeq) + L":" + std::to_wstring(item.ulFlags));
 		}
@@ -578,10 +595,11 @@ namespace
 		if (menu.value == nullptr) return false;
 		const HMENU documents = aaApi_InsertMenuByType(AAMENU_DOCUMENT, menu.value, 0);
 		if (documents == nullptr || aaApi_InitMenuByAaControl(selection.list, documents,
-			AAMG_MODIFY | AAMG_WORKFLOW | AAMG_CUSTOMS | AAMG_PROPERTIES | AAMG_VIEW) == 0) return selection.documents.empty();
+			AAMG_MODIFY | AAMG_WORKFLOW | AAMG_CUSTOMS | AAMG_PROPERTIES | AAMG_VIEW) == 0)
+		{ result.status = L"ProjectWise workflow actions are unavailable for this selection."; return true; }
 		const QuickAccess::WorkflowMenuIds ids{IDMD_CHANGE_NEXT_STATE, IDMD_CHANGE_PREV_STATE, IDMD_STATE, IDMD_SET_FINAL, IDMD_REMOVE_FINAL};
 		if (!QuickAccess::ReadWorkflowMenu(documents, ids, !selection.documents.empty() && selection.control == selection.list, result))
-			return selection.documents.empty();
+		{ result.status = L"ProjectWise exposed no workflow actions for this selection. Check Document > Change State."; return true; }
 		// Preserve the SDK-initialised menu while its extension command IDs are displayed/used.
 		std::swap(g_workflowMenu, menu.value);
 		return true;
@@ -616,6 +634,8 @@ namespace
 			if (!BuildWorkflow(current, selection, true) || !QuickAccess::CanInvokeWorkflow(shown, current, command) ||
 				selection.documents.empty() || selection.documents.size() > static_cast<std::size_t>(MAXLONG)) return false;
 			if (!FocusSelection(selection.list)) return false;
+			const auto notification = QuickAccess::BeginWorkflowNotification(command);
+			struct Notification { std::uint64_t token; ~Notification() { QuickAccess::EndWorkflowNotification(token); } } notify{notification};
 			// Native document command dispatch preserves extension callbacks, WRE prompts and audit-comment dialogs.
 			const LONG_PTR outcome = aaApi_ExecuteDocumentCommand(command, static_cast<LONG>(selection.documents.size()), selection.documents.data());
 			g_workflowChecked = 0;
@@ -632,6 +652,15 @@ namespace
 			Report(L"SDK workflow command dependency or export unavailable");
 			return false;
 		}
+	}
+	bool IsWorkflowCommand(UINT command)
+	{
+		if (command == IDMD_CHANGE_NEXT_STATE || command == IDMD_CHANGE_PREV_STATE || command == IDMD_STATE) return true;
+		if (!IsMenu(g_workflowMenu)) return false;
+		QuickAccess::WorkflowState menu;
+		const QuickAccess::WorkflowMenuIds ids{IDMD_CHANGE_NEXT_STATE, IDMD_CHANGE_PREV_STATE, IDMD_STATE, IDMD_SET_FINAL, IDMD_REMOVE_FINAL};
+		if (!QuickAccess::ReadWorkflowMenu(g_workflowMenu, ids, true, menu)) return false;
+		return std::any_of(menu.actions.begin(), menu.actions.end(), [&](const auto& action) { return action.command == command; });
 	}
 
 	bool BuildAdmin(QuickAccess::ContextState& result)
@@ -668,11 +697,14 @@ namespace
 			{ error = L"The datasource or administrative session changed. Reopen New User."; return false; }
 			LONG id = 0;
 			// The server remains authoritative for Restricted Administrator Users-node permissions and uniqueness.
-			if (!aaApi_CreateUser3(&id, user.name.c_str(), user.description.c_str(), user.email.c_str()))
+			aaApi_RemoveLastError();
+			if (!aaApi_CreateUser3(&id, user.name.c_str(), user.description.empty() ? nullptr : user.description.c_str(), user.email.empty() ? nullptr : user.email.c_str()))
 			{
-				wchar_t text[180]{};
-				swprintf_s(text, L"ProjectWise rejected user creation (error %ld). Check Users-node permissions and the account name.", aaApi_GetLastErrorId());
-				error = text; return false;
+				const LONG code = aaApi_GetLastErrorId();
+				const LPCWSTR nativeMessage = aaApi_GetLastErrorMessage();
+				const std::wstring message = nativeMessage ? nativeMessage : L"";
+				const LPCWSTR nativeDetail = aaApi_GetLastErrorDetail();
+				error = QuickAccess::UserCreationError(code, message, nativeDetail ? nativeDetail : L""); return false;
 			}
 			return true;
 		}
@@ -681,7 +713,7 @@ namespace
 	bool CreateUser(void*, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
 	{
 		__try { return CreateUserImpl(shown, user, error); }
-		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { error = L"The SDK user-creation dependency is unavailable in this Explorer installation."; return false; }
 	}
 	bool ExecuteAdminImpl(const QuickAccess::ContextState& shown, UINT command)
 	{
@@ -723,6 +755,7 @@ namespace
 	{
 		g_classicPreferred = true; g_ribbonExpected = false;
 		QuickAccess::SetVersionStacksAvailable(false);
+		QuickAccess::SetWorkflowNotificationsAvailable(false);
 		if (!QuickAccess::SaveClassicUiPreference(true)) Report(L"could not persist Classic UI preference");
 		if (g_startupTimer != 0) { KillTimer(nullptr, g_startupTimer); g_startupTimer = 0; }
 		if (IsWindow(g_window)) { QuickAccess::Dock(g_window, false); DestroyWindow(g_window); }
@@ -768,6 +801,7 @@ namespace
 		}
 		g_ribbonExpected = g_window != nullptr;
 		if (g_ribbonExpected) QuickAccess::SetVersionStacksAvailable(true);
+		if (g_ribbonExpected) QuickAccess::SetWorkflowNotificationsAvailable(true);
 		return g_window != nullptr;
 	}
 
@@ -883,6 +917,9 @@ namespace
 			!AddVisibilityCommand(AAMENU_VIEW, L"Ribbon", g_viewCommand)) { RecoverClassic(L"ribbon menu registration failed"); return false; }
 		if (!QuickAccess::RegisterVersionStacks(g_instance, !g_classicPreferred))
 			Report(L"optional Version stacks view unavailable; native document list retained");
+		if (!QuickAccess::StartWorkflowNotifications(g_instance, IsWorkflowCommand))
+			Report(L"workflow notification observer unavailable; native workflow operations retained");
+		QuickAccess::SetWorkflowNotificationsAvailable(!g_classicPreferred);
 		g_healthTimer = SetTimer(nullptr, 0, 1000, CheckRibbon);
 		if (g_healthTimer == 0) { RecoverClassic(L"ribbon health monitoring unavailable"); return false; }
 		g_startupTimer = SetTimer(nullptr, 0, 250, Startup);

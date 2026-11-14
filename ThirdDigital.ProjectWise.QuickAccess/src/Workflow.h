@@ -21,6 +21,7 @@ namespace QuickAccess
 		bool rulesEngine = false;
 		std::wstring context;
 		std::vector<WorkflowAction> actions;
+		std::wstring status;
 		bool operator==(const WorkflowState&) const = default;
 	};
 	struct WorkflowMenuIds { UINT next, previous, change, setFinal, removeFinal; };

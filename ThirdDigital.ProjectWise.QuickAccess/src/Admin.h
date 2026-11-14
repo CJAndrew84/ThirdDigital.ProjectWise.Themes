@@ -8,6 +8,7 @@ namespace QuickAccess
 	struct NewUser { std::wstring name, description, email; };
 	ContextState AdminContext(std::wstring context, bool administrator, bool restrictedAdministrator, bool administrativeSession);
 	bool ValidateNewUser(const NewUser& user, std::wstring& error);
+	std::wstring UserCreationError(LONG code, const std::wstring& message, const std::wstring& detail);
 	using CreateUserCallback = bool (*)(void*, const ContextState&, const NewUser&, std::wstring& error);
 	INT_PTR ShowNewUserDialog(HWND parent, HINSTANCE instance, const ContextState& shown, const wchar_t* datasource, void* context, CreateUserCallback create);
 }

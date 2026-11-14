@@ -816,7 +816,7 @@ namespace QuickAccess
 			if (Contextual(state.tab))
 			{
 				RECT caption{0, client.bottom - MulDiv(24, dpi, 96), client.right, client.bottom};
-				Text(dc, state.font, state.tab == Tab::Admin ? L"Datasource administration" : state.workflow.actions.empty() ? L"Select documents to see workflow actions" :
+				Text(dc, state.font, state.tab == Tab::Admin ? L"Datasource administration" : !state.workflow.status.empty() ? state.workflow.status.c_str() : state.workflow.actions.empty() ? L"Select documents to see workflow actions" :
 					state.workflow.rulesEngine ? L"Rules Engine operations" : L"Workflow transitions", caption,
 					ContrastColour(GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_WINDOW), 4.5));
 				return;
@@ -2094,7 +2094,15 @@ namespace QuickAccess
 				try
 				{
 					ContextState context;
-					const bool ready = IsWindowEnabled(state->owner) && query(state->host.context, context);
+					bool ready = true;
+					if (!IsWindowEnabled(state->owner))
+					{
+						// A modal host dialog is temporary unavailability, not evidence that the folder/role context disappeared.
+						context = Context(*state, tab);
+						for (auto& action : context.actions) action.enabled = false;
+						if (tab == Tab::Workflow && context.visible) context.status = L"Close the active ProjectWise dialog to use workflow actions.";
+					}
+					else ready = query(state->host.context, context);
 					if (State(window) != state) return;
 					if (!ready) context = {};
 					if (!UpdateContext(*state, tab, std::move(context))) ResetContext(*state, tab);
