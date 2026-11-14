@@ -1,5 +1,6 @@
 // ProjectWise SDK adapter. Keep licensed SDK declarations and binaries out of this repository.
 #include <windows.h>
+#include <objbase.h>
 #include <commctrl.h>
 #include <aaapi.h>
 #include <aadmsapi.h>
@@ -229,7 +230,8 @@ namespace QuickAccess
 						std::vector<wchar_t> text(256);
 						for (;;)
 						{
-							const int length = ListView_GetItemText(source, row.sourceIndex, c, text.data(), static_cast<int>(text.size()));
+							LVITEMW textItem{}; textItem.iSubItem = c; textItem.pszText = text.data(); textItem.cchTextMax = static_cast<int>(text.size());
+							const int length = static_cast<int>(SendMessageW(source, LVM_GETITEMTEXTW, row.sourceIndex, reinterpret_cast<LPARAM>(&textItem)));
 							if (length < static_cast<int>(text.size()) - 1) break;
 							if (text.size() >= 32768) return VS::ReadResult::Unavailable;
 							text.resize(text.size() * 2);
@@ -418,14 +420,18 @@ namespace QuickAccess
 		{
 			g_instance = instance; g_available = available;
 			if (g_registered) return true;
-			g_command = aaApi_ReserveCommandIdByType(AAMENU_VIEW);
-			if (!g_command) return false;
+			const ULONG anchor = aaApi_GetCommandHandle(AAMENU_VIEW, ID_VIEW_LARGEICONS);
+			const ULONG parent = anchor ? aaApi_GetNextMenuItem(anchor, 0, AAMIPF_PARENT) : 0;
+			if (!parent) { OutputDebugStringW(L"ProjectWise Version stacks: could not locate Explorer's View menu.\n"); return false; }
+			g_command = aaApi_ReserveCommandIdByType(AAMENU_CUSTOM);
+			if (!g_command) { OutputDebugStringW(L"ProjectWise Version stacks: could not reserve visibility command.\n"); return false; }
 			AADMSMENUITEM item{};
 			item.ulMask = AADMSMIF_FLAGS | AADMSMIF_NAME | AADMSMIF_CMDTYPE | AADMSMIF_CMDID | AADMSMIF_CALLBACK | AADMSMIF_STATEPROC;
-			item.uiFlags = AAMIF_COMMAND; item.uiCmdType = AAMENU_VIEW; item.uiCommandId = g_command; item.ushParamType = AACMDPT_GENERIC;
+			item.uiFlags = AAMIF_COMMAND; item.uiCmdType = AAMENU_CUSTOM; item.uiCommandId = g_command; item.ushParamType = AACMDPT_GENERIC;
 			item.lptstrName = const_cast<LPWSTR>(L"Version stacks"); item.fpExecute = Toggle; item.fpGetState = ToggleState;
-			if (!aaApi_AddCustomMenuItem(0, AADMSMI_LAST, &item)) return false;
+			if (!aaApi_AddCustomMenuItem(parent, AADMSMI_LAST, &item)) { OutputDebugStringW(L"ProjectWise Version stacks: could not add visibility command to View menu.\n"); return false; }
 			g_registered = aaApi_AddDocumentListControlView(L"AtkinsRealis.ProjectWise.VersionStacks", CreateView) != FALSE;
+			if (!g_registered) OutputDebugStringW(L"ProjectWise Version stacks: SDK rejected additional document-list view registration.\n");
 			return g_registered;
 		}
 		bool TryRegister(HINSTANCE instance, bool available) noexcept

@@ -850,7 +850,15 @@ namespace
 
 	bool AddVisibilityCommand(LONG type, const wchar_t* name, UINT& id, bool classic = false)
 	{
-		id = aaApi_ReserveCommandIdByType(type);
+		ULONG parent = 0;
+		const LONG commandType = type == AAMENU_VIEW ? AAMENU_CUSTOM : type;
+		if (type == AAMENU_VIEW)
+		{
+			const ULONG anchor = aaApi_GetCommandHandle(AAMENU_VIEW, ID_VIEW_LARGEICONS);
+			parent = anchor ? aaApi_GetNextMenuItem(anchor, 0, AAMIPF_PARENT) : 0;
+			if (!parent) { Report(L"could not locate Explorer's View menu"); return false; }
+		}
+		id = aaApi_ReserveCommandIdByType(commandType);
 		if (id == 0)
 		{
 			Report(L"could not reserve toolbar visibility command");
@@ -859,13 +867,13 @@ namespace
 		AADMSMENUITEM item{};
 		item.ulMask = AADMSMIF_FLAGS | AADMSMIF_NAME | AADMSMIF_CMDTYPE | AADMSMIF_CMDID | AADMSMIF_CALLBACK | AADMSMIF_STATEPROC;
 		item.uiFlags = AAMIF_COMMAND;
-		item.uiCmdType = static_cast<UINT>(type);
+		item.uiCmdType = static_cast<UINT>(commandType);
 		item.uiCommandId = id;
 		item.ushParamType = AACMDPT_GENERIC;
 		item.lptstrName = const_cast<LPWSTR>(name);
 		item.fpExecute = classic ? ClassicCommand : Toggle;
 		item.fpGetState = classic ? ClassicState : ToggleState;
-		if (aaApi_AddCustomMenuItem(0, AADMSMI_LAST, &item) == 0)
+		if (aaApi_AddCustomMenuItem(parent, AADMSMI_LAST, &item) == 0)
 		{
 			Report(L"could not register ribbon visibility menu command");
 			return false;
