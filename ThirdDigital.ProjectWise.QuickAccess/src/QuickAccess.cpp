@@ -1226,10 +1226,10 @@ namespace QuickAccess
 			if (!SendMessageW(state.toolbar, TB_ADDBUTTONS, buttons.size(), reinterpret_cast<LPARAM>(buttons.data()))) return false;
 			if (HasSelectors(state))
 			{
-				constexpr const wchar_t* labels[] = {L"Interface", L"View"};
+				constexpr const wchar_t* selectorNames[] = {L"Interface", L"View"};
 				for (std::size_t i = 0; i < state.selectors.size(); ++i)
 				{
-					state.selectorLabels[i] = CreateWindowExW(0, L"STATIC", labels[i], WS_CHILD | SS_LEFT, 0, 0, 0, 0, state.page, nullptr, instance, nullptr);
+					state.selectorLabels[i] = CreateWindowExW(0, L"STATIC", selectorNames[i], WS_CHILD | SS_LEFT, 0, 0, 0, 0, state.page, nullptr, instance, nullptr);
 					state.selectors[i] = CreateWindowExW(0, L"COMBOBOX", nullptr, WS_CHILD | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
 						0, 0, 268, 260, state.page, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kFirstSelector + i)), instance, nullptr);
 					if (state.selectorLabels[i] == nullptr || state.selectors[i] == nullptr ||
