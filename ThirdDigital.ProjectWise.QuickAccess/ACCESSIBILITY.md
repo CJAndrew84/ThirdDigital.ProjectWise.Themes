@@ -22,6 +22,8 @@ Disabled controls are exempt from the contrast requirements in 1.4.3/1.4.11. The
 
 ## Automated regression coverage
 
+Interface and View use labeled native dropdown lists on View. Regression checks cover accessible names, option/current-value synchronization, keyboard and native selection notifications, permission and stale-context rejection, narrow-window focus visibility, popup-list mouse handling, Escape cancellation, unavailable SDK queries and destruction during refresh/dispatch. Browsing an open list retains its position; only a committed choice dispatches. SDK enumeration and synchronization with the actual Classic toolbar still require the Explorer acceptance pass.
+
 Show all versions is a native toolbar check-style button on View, with a full accessible label and visible checked underline. Tests cover keyboard End/Enter/Space, matching and externally changed host state, rejected/unavailable settings, inactive-tab dispatch and the wider target. The SDK adapter uses ProjectWise's existing user setting and document-window notification; live native-control synchronization and setting restrictions require Explorer acceptance.
 
 The conditional Workflow tab uses native owner-drawn buttons with complete accessible names and native enabled/disabled roles. Its actions form one keyboard group: Tab/Shift+Tab leaves the group, arrows/Home/End select an enabled action, Enter/Space activates it, and focused actions scroll into view. Removing the selected Workflow tab dismisses its popup, selects Home and restores visible tab focus. Every dispatch revalidates datasource/folder/workflow/selection and the operation's current native ID, label, kind and enabled state.

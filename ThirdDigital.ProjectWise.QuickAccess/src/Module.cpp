@@ -37,6 +37,9 @@ namespace
 	LONG g_workflowFolder = 0;
 	LONG g_workflowId = 0;
 	ULONGLONG g_workflowChecked = 0;
+	QuickAccess::SelectorStates g_selectorCache;
+	std::wstring g_selectorContext;
+	ULONGLONG g_selectorsChecked = 0;
 
 	constexpr UINT kCommands[][3] = {
 		{IDMP_CREATE, 0, 0},
@@ -397,6 +400,107 @@ namespace
 		HAADMSBUFFER value = nullptr;
 		~OwnedBuffer() { if (value != nullptr) aaApi_DmsDataBufferFree(value); }
 	};
+
+	bool BuildSelectors(QuickAccess::SelectorStates& result, bool force)
+	{
+		result = {};
+		const HWND list = NavigationList();
+		const HDSOURCE source = aaApi_GetActiveDatasource();
+		if (source == nullptr || !ExplorerControl(list)) return true;
+		const LONG folder = aaApi_DocListGetProject(list);
+		const std::wstring context = std::to_wstring(reinterpret_cast<UINT_PTR>(source)) + L"/" +
+			std::to_wstring(aaApi_GetCurrentUserId()) + L"/" + std::to_wstring(reinterpret_cast<UINT_PTR>(list)) + L"/" + std::to_wstring(folder);
+		const ULONGLONG now = GetTickCount64();
+		if (force || context != g_selectorContext || now - g_selectorsChecked >= 5000)
+		{
+			QuickAccess::SelectorStates fresh;
+			for (auto& selector : fresh) selector.context = context;
+			const LONG count = aaApi_SelectAllGuis();
+			if (count < 0 || count > 1024) return false;
+			for (LONG i = 0; i < count; ++i)
+			{
+				const LONG id = aaApi_GetGuiId(i);
+				const LPCWSTR name = aaApi_GetGuiStringProperty(GUI_PROP_NAME, i);
+				if (id <= 0 || name == nullptr || *name == L'\0') return false;
+				fresh[0].choices.push_back({static_cast<UINT_PTR>(id), name});
+			}
+			// Copy all interface properties before making any other SDK calls that could replace the static GUI buffer.
+			for (HAAVIEW view = aaApi_ViewGetFirstForProject(std::max(0L, folder)); view != nullptr; view = aaApi_ViewGetNext(view))
+			{
+				if (fresh[1].choices.size() >= 1024) return false;
+				const UINT_PTR id = reinterpret_cast<UINT_PTR>(view);
+				if (std::any_of(fresh[1].choices.begin(), fresh[1].choices.end(), [id](const auto& item) { return item.id == id; })) return false;
+				const LPCWSTR name = aaApi_ViewGetName(view);
+				if (name == nullptr || *name == L'\0') return false;
+				fresh[1].choices.push_back({id, name});
+			}
+			g_selectorCache = std::move(fresh);
+			g_selectorContext = context;
+			g_selectorsChecked = now;
+		}
+		result = g_selectorCache;
+		const LONG activeInterface = aaApi_GetActiveInterface(); // Classic's datasource-level attribute interface.
+		const HAAVIEW activeView = aaApi_DocListGetViewHandle(list);
+		for (std::size_t i = 0; i < result.size(); ++i)
+		{
+			auto& selector = result[i];
+			selector.selected = -1;
+			const UINT_PTR active = i == 0 ? static_cast<UINT_PTR>(activeInterface) : reinterpret_cast<UINT_PTR>(activeView);
+			for (std::size_t j = 0; j < selector.choices.size(); ++j)
+				if (selector.choices[j].id == active) selector.selected = static_cast<int>(j);
+			selector.enabled = !selector.choices.empty() && (i != 0 || aaApi_CanChangeActiveInterface() != FALSE);
+		}
+		return source == aaApi_GetActiveDatasource() && list == NavigationList() && folder == aaApi_DocListGetProject(list);
+	}
+
+	bool RefreshSelectorsImpl(QuickAccess::SelectorStates& selectors, bool force)
+	{
+		try { return BuildSelectors(selectors, force); }
+		catch (...) { Report(L"could not read Interface and View choices"); return false; }
+	}
+
+	bool RefreshSelectors(void*, QuickAccess::SelectorStates& selectors, bool force)
+	{
+		__try { return IsWindowEnabled(g_frame) && RefreshSelectorsImpl(selectors, force); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { Report(L"SDK selector dependency or export unavailable"); return false; }
+	}
+
+	bool SelectChoiceImpl(QuickAccess::Selector selector, const QuickAccess::SelectorState& shown, std::size_t choice)
+	{
+		try
+		{
+			const auto index = static_cast<std::size_t>(selector);
+			QuickAccess::SelectorStates current;
+			if (index >= current.size() || !BuildSelectors(current, true) || !QuickAccess::CanSelectChoice(shown, current[index], choice)) return false;
+			const auto& item = shown.choices[choice];
+			bool changed = false;
+			if (selector == QuickAccess::Selector::Interface)
+			{
+				if (item.id > static_cast<UINT_PTR>(MAXLONG) || !aaApi_CanChangeActiveInterface() || !aaApi_SetActiveInterface(static_cast<LONG>(item.id))) return false;
+				aaApi_SendInterfaceChangedNotify(); // Keep Classic's existing notification receiver and selector in sync.
+				aaApi_UpdateDocumentWindows();
+				changed = aaApi_GetActiveInterface() == static_cast<LONG>(item.id);
+			}
+			else
+			{
+				const HWND list = NavigationList();
+				const auto view = reinterpret_cast<HAAVIEW>(item.id);
+				if (!ExplorerControl(list) || !aaApi_ViewIsValidViewHandle(view) || !aaApi_DocListSetView(list, view)) return false;
+				if (!aaApi_ViewSetLastViewName(item.label.c_str())) Report(L"view applied but its last-used name could not be updated");
+				aaApi_SendViewSettingsNotify();
+				changed = aaApi_DocListGetViewHandle(list) == view;
+			}
+			g_selectorsChecked = 0;
+			return changed;
+		}
+		catch (...) { Report(L"could not apply Interface or View selection"); return false; }
+	}
+
+	bool SelectChoice(void*, QuickAccess::Selector selector, const QuickAccess::SelectorState& shown, std::size_t choice)
+	{
+		__try { return IsWindowEnabled(g_frame) && SelectChoiceImpl(selector, shown, choice); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { Report(L"SDK selector command dependency or export unavailable"); return false; }
+	}
 	struct WorkflowSelection
 	{
 		HWND list = nullptr;
@@ -523,7 +627,7 @@ namespace
 				if (target == nullptr) { Report(L"no Explorer selection control is available for keyboard focus"); return false; }
 				SetFocus(target);
 				return GetFocus() == target || IsChild(target, GetFocus());
-			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow});
+			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow, RefreshSelectors, SelectChoice});
 		if (g_window != nullptr && !QuickAccess::Dock(g_window, true))
 			Report(L"Explorer's content pane is not ready for docking; use the toolbar context menu to retry");
 		return g_window != nullptr;

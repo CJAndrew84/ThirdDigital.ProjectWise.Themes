@@ -17,6 +17,9 @@ namespace QuickAccess
 	constexpr UINT kSearchText = 204;
 	constexpr UINT kCommandPage = 205;
 	constexpr UINT kNavigationRow = 206;
+	constexpr UINT kFirstSelector = 220;
+	constexpr std::size_t kSelectorCount = 2;
+	constexpr std::size_t kInterfaceDialog = 15;
 	constexpr UINT kFirstNavigation = 210;
 	constexpr std::size_t kNavigationCount = 3;
 
@@ -32,6 +35,22 @@ namespace QuickAccess
 
 	using States = std::array<ButtonState, kButtonCount>;
 	using NavigationStates = std::array<ButtonState, kNavigationCount>;
+	enum class Selector { Interface, View };
+	struct Choice
+	{
+		UINT_PTR id = 0;
+		std::wstring label;
+		bool operator==(const Choice&) const = default;
+	};
+	struct SelectorState
+	{
+		std::wstring context;
+		std::vector<Choice> choices;
+		int selected = -1;
+		bool enabled = false;
+	};
+	using SelectorStates = std::array<SelectorState, kSelectorCount>;
+	bool CanSelectChoice(const SelectorState& shown, const SelectorState& current, std::size_t choice) noexcept;
 	NavigationStates NavigationAvailability(bool historyEnabled, LONG count, LONG position, bool hasParent) noexcept;
 
 	struct Host
@@ -47,6 +66,8 @@ namespace QuickAccess
 		bool (*refreshAddress)(void* context, HWND address) = nullptr;
 		bool (*refreshWorkflow)(void* context, WorkflowState& workflow) = nullptr;
 		bool (*executeWorkflow)(void* context, const WorkflowState& shown, UINT command) = nullptr;
+		bool (*refreshSelectors)(void* context, SelectorStates& selectors, bool force) = nullptr;
+		bool (*selectChoice)(void* context, Selector selector, const SelectorState& shown, std::size_t choice) = nullptr;
 	};
 
 	bool ReadMenuState(HMENU menu, UINT command, ButtonState& state) noexcept;
@@ -69,4 +90,5 @@ namespace QuickAccess
 	void Refresh(HWND window) noexcept;
 	bool Invoke(HWND window, UINT buttonId) noexcept;
 	bool InvokeWorkflow(HWND window, UINT buttonId) noexcept;
+	bool SelectChoice(HWND window, Selector selector, std::size_t choice) noexcept;
 }

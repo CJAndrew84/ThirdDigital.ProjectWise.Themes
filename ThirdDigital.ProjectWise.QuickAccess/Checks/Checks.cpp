@@ -51,6 +51,12 @@ namespace
 		UINT lastWorkflowCommand = 0;
 		HWND destroyOnWorkflowRefresh = nullptr;
 		HWND destroyOnWorkflowExecute = nullptr;
+		QuickAccess::SelectorStates selectors;
+		bool selectorsAvailable = true;
+		unsigned selections = 0, forcedSelectorQueries = 0;
+		QuickAccess::Selector lastSelector = QuickAccess::Selector::Interface;
+		UINT_PTR lastChoice = 0;
+		HWND destroyOnSelectorsRefresh = nullptr, destroyOnSelect = nullptr;
 
 		static bool Refresh(void* context, QuickAccess::States& result)
 		{
@@ -164,6 +170,39 @@ namespace
 			{
 				const HWND window = host.destroyOnWorkflowExecute;
 				host.destroyOnWorkflowExecute = nullptr;
+				DestroyWindow(window);
+			}
+			return host.executeSucceeds;
+		}
+
+		static bool RefreshSelectors(void* context, QuickAccess::SelectorStates& result, bool force)
+		{
+			auto& host = *static_cast<FakeHost*>(context);
+			result = host.selectors;
+			if (force) ++host.forcedSelectorQueries;
+			if (host.destroyOnSelectorsRefresh != nullptr)
+			{
+				const HWND window = host.destroyOnSelectorsRefresh;
+				host.destroyOnSelectorsRefresh = nullptr;
+				DestroyWindow(window);
+			}
+			return host.selectorsAvailable;
+		}
+
+		static bool SelectChoice(void* context, QuickAccess::Selector selector, const QuickAccess::SelectorState& shown, std::size_t choice)
+		{
+			auto& host = *static_cast<FakeHost*>(context);
+			auto& state = host.selectors[static_cast<std::size_t>(selector)];
+			if (!QuickAccess::CanSelectChoice(shown, state, choice)) return false;
+			++host.selections;
+			host.lastSelector = selector;
+			host.lastChoice = shown.choices[choice].id;
+			if (host.executeSucceeds)
+				for (std::size_t i = 0; i < state.choices.size(); ++i) if (state.choices[i].id == host.lastChoice) state.selected = static_cast<int>(i);
+			if (host.destroyOnSelect != nullptr)
+			{
+				const HWND window = host.destroyOnSelect;
+				host.destroyOnSelect = nullptr;
 				DestroyWindow(window);
 			}
 			return host.executeSucceeds;
@@ -519,6 +558,104 @@ namespace
 		SelectTab(window, Tab::Home);
 		Expect(!Invoke(window, command) && host.executions == before, L"Home cannot dispatch View's version toggle");
 		DestroyWindow(window);
+	}
+
+	void CheckSelectors(HWND owner, const wchar_t* previewPath)
+	{
+		using namespace QuickAccess;
+		FakeHost host;
+		for (auto& item : host.states) item = {true, false};
+		host.selectors = {{{L"source/list/folder", {{11, L"Standard"}, {12, L"Engineering"}}, 0, true},
+			{L"source/list/folder", {{101, L"Default"}, {102, L"Document control"}, {103, L"Delivery"}}, 1, true}}};
+		const auto original = host.selectors;
+		auto changed = original[0];
+		Expect(CanSelectChoice(original[0], changed, 1), L"current selector choices can be committed by identity");
+		std::reverse(changed.choices.begin(), changed.choices.end());
+		Expect(CanSelectChoice(original[0], changed, 1), L"reordering native choices preserves identity-based dispatch");
+		changed = original[0]; changed.context = L"another datasource or folder";
+		Expect(!CanSelectChoice(original[0], changed, 1), L"a selector cannot apply to a different datasource, list or folder");
+		changed = original[0]; changed.enabled = false;
+		Expect(!CanSelectChoice(original[0], changed, 1), L"newly denied selector changes are rejected");
+		changed = original[0]; changed.choices[1].label = L"Reused ID";
+		Expect(!CanSelectChoice(original[0], changed, 1), L"renamed or reused native choices are rejected");
+		changed.choices.pop_back();
+		Expect(!CanSelectChoice(original[0], changed, 1), L"removed selector choices are rejected");
+		changed = original[0]; changed.choices.push_back(changed.choices[0]);
+		Expect(!CanSelectChoice(original[0], changed, 1) && !CanSelectChoice(original[0], original[0], 900), L"duplicate and invalid selector identities fail closed");
+		const Host callbacks{&host, FakeHost::Refresh, FakeHost::Execute, nullptr, FakeHost::CreateAddress, FakeHost::RefreshNavigation,
+			FakeHost::Navigate, nullptr, FakeHost::RefreshAddress, nullptr, nullptr, FakeHost::RefreshSelectors, FakeHost::SelectChoice};
+		HWND window = Create(owner, GetModuleHandleW(nullptr), callbacks);
+		Expect(window != nullptr && SelectTab(window, Tab::View), L"View ribbon with native selectors created");
+		if (window == nullptr) return;
+		ShowWindow(owner, SW_SHOWNOACTIVATE); ShowWindow(window, SW_SHOWNOACTIVATE);
+		HWND page = CommandPage(window), toolbar = Toolbar(window);
+		HWND interfaceCombo = GetDlgItem(page, kFirstSelector), viewCombo = GetDlgItem(page, kFirstSelector + 1);
+		Expect(interfaceCombo != nullptr && viewCombo != nullptr && IsWindowVisible(interfaceCombo) && IsWindowVisible(viewCombo), L"Interface and View are visible native dropdown selectors");
+		Expect((GetWindowLongW(interfaceCombo, GWL_STYLE) & CBS_DROPDOWNLIST) == CBS_DROPDOWNLIST &&
+			AccessibleName(interfaceCombo) == L"Interface" && AccessibleName(viewCombo) == L"View", L"selectors expose their complete native accessible names");
+		Expect(SendMessageW(interfaceCombo, CB_GETCOUNT, 0, 0) == 2 && SendMessageW(interfaceCombo, CB_GETCURSEL, 0, 0) == 0 &&
+			SendMessageW(viewCombo, CB_GETCOUNT, 0, 0) == 3 && SendMessageW(viewCombo, CB_GETCURSEL, 0, 0) == 1, L"selector options and current values match the host");
+		Expect(SendMessageW(toolbar, TB_ISBUTTONHIDDEN, kFirstButton + kInterfaceDialog, 0) &&
+			!Invoke(window, kFirstButton + static_cast<UINT>(kInterfaceDialog)), L"the dropdown replaces the Interface dialog button when supported");
+		if (previewPath != nullptr) Expect(SaveRibbonPreview(window, previewPath), L"native Interface and View selector preview written");
+		SetFocus(interfaceCombo);
+		QueuedKey(interfaceCombo, VK_F4);
+		Expect(SendMessageW(interfaceCombo, CB_GETDROPPEDSTATE, 0, 0) != 0, L"native F4 opens the Interface list");
+		QueuedKey(interfaceCombo, VK_DOWN);
+		Expect(host.selections == 0, L"browsing an open dropdown does not apply an interface");
+		Expect(QueuedKey(interfaceCombo, VK_RETURN) && host.selections == 1 && host.lastChoice == 12 &&
+			SendMessageW(interfaceCombo, CB_GETCURSEL, 0, 0) == 1, L"Enter applies the chosen Interface once");
+		QueuedKey(interfaceCombo, VK_RETURN, WM_KEYUP);
+		Expect(QueuedKey(interfaceCombo, VK_TAB) && GetFocus() == viewCombo, L"Tab moves from Interface to View");
+		Expect(HandleKey(window, VK_TAB, true) && GetFocus() == interfaceCombo, L"Shift+Tab returns from View to Interface");
+		SendMessageW(viewCombo, CB_SETCURSEL, 2, 0);
+		SendMessageW(page, WM_COMMAND, MAKEWPARAM(kFirstSelector + 1, CBN_SELENDOK), reinterpret_cast<LPARAM>(viewCombo));
+		Expect(host.selections == 2 && host.lastSelector == Selector::View && host.lastChoice == 103 && host.forcedSelectorQueries > 0, L"a native selection notification applies the exact View after revalidation");
+		host.selectors[1].selected = 0; Refresh(window);
+		Expect(SendMessageW(viewCombo, CB_GETCURSEL, 0, 0) == 0, L"external Classic View changes update the ribbon selection");
+		host.executeSucceeds = false;
+		Expect(!SelectChoice(window, Selector::View, 2) && SendMessageW(viewCombo, CB_GETCURSEL, 0, 0) == 0, L"a rejected View change restores the actual host value");
+		host.executeSucceeds = true;
+		const unsigned before = host.selections;
+		host.selectors[0].context = L"other datasource/list/folder";
+		Expect(!SelectChoice(window, Selector::Interface, 1) && host.selections == before, L"navigation between rendering and committing rejects a stale choice");
+		host.selectors = original; Refresh(window);
+		SetFocus(interfaceCombo); host.selectors[0].enabled = false; Refresh(window);
+		Expect(!IsWindowEnabled(interfaceCombo) && GetFocus() != interfaceCombo && !SelectChoice(window, Selector::Interface, 1), L"permission changes disable the selector and preserve visible focus");
+		host.selectors = original; Refresh(window);
+		SelectTab(window, Tab::Home);
+		Expect(!IsWindowVisible(interfaceCombo) && !IsWindowVisible(viewCombo) && !SelectChoice(window, Selector::View, 1), L"selectors are hidden and inactive on Home");
+		SelectTab(window, Tab::View); EnableWindow(owner, FALSE);
+		Expect(!SelectChoice(window, Selector::View, 2), L"modal Explorer prevents selector dispatch"); EnableWindow(owner, TRUE);
+		HWND content = CreateWindowExW(0, L"STATIC", L"Selector content", WS_CHILD | WS_VISIBLE, 0, 0, 640, 500, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+		Expect(Dock(window, true), L"selector ribbon docks for narrow-window checks");
+		SetFocus(toolbar); QueuedKey(toolbar, VK_TAB);
+		RECT item = RelativeRect(interfaceCombo, page), viewport{}; GetClientRect(page, &viewport);
+		Expect(GetFocus() == interfaceCombo && item.left >= 0 && item.right <= viewport.right, L"Tab reveals the Interface selector within a narrow ribbon");
+		QueuedKey(interfaceCombo, VK_TAB); item = RelativeRect(viewCombo, page);
+		Expect(GetFocus() == viewCombo && item.left >= 0 && item.right <= viewport.right, L"Tab reveals the View selector within a narrow ribbon");
+		SetDisplayMode(window, DisplayMode::Minimized); SelectTab(window, Tab::View); SetFocus(interfaceCombo);
+		SendMessageW(interfaceCombo, CB_SHOWDROPDOWN, TRUE, 0);
+		COMBOBOXINFO info{sizeof(info)}; GetComboBoxInfo(interfaceCombo, &info);
+		PostMessageW(info.hwndList, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(5, 5));
+		MSG click{}; PeekMessageW(&click, info.hwndList, WM_LBUTTONDOWN, WM_LBUTTONDOWN, PM_REMOVE);
+		Expect(IsPopupOpen(window), L"clicking a native dropdown list does not dismiss the minimized ribbon");
+		const unsigned beforeEscape = host.selections;
+		QueuedKey(interfaceCombo, VK_ESCAPE);
+		Expect(!SendMessageW(interfaceCombo, CB_GETDROPPEDSTATE, 0, 0) && IsPopupOpen(window) && host.selections == beforeEscape,
+			L"Escape cancels only the native dropdown before dismissing the ribbon");
+		QueuedKey(interfaceCombo, VK_ESCAPE);
+		Expect(!IsPopupOpen(window), L"a second Escape dismisses minimized commands");
+		SetDisplayMode(window, DisplayMode::Expanded); SelectTab(window, Tab::View);
+		host.selectorsAvailable = false; Refresh(window);
+		Expect(!IsWindowEnabled(interfaceCombo) && SendMessageW(interfaceCombo, CB_GETCOUNT, 0, 0) == 0 && !SelectChoice(window, Selector::Interface, 0), L"failed queries clear stale choices and disable selectors");
+		host.selectorsAvailable = true; host.selectors = original; Refresh(window);
+		host.destroyOnSelectorsRefresh = window;
+		Expect(!SelectChoice(window, Selector::View, 0) && !IsWindow(window), L"destruction during selector revalidation blocks dispatch safely");
+		window = Create(owner, GetModuleHandleW(nullptr), callbacks); ShowWindow(window, SW_SHOWNOACTIVATE); SelectTab(window, Tab::View);
+		host.destroyOnSelect = window;
+		Expect(SelectChoice(window, Selector::View, 0) && !IsWindow(window), L"destruction during selector execution is safe");
+		DestroyWindow(content);
 	}
 
 	void CheckAccessibility(HWND owner, HWND window, FakeHost& host, HWND address, HWND content)
@@ -1261,6 +1398,7 @@ int wmain(int argc, wchar_t* argv[])
 	CheckNavigation(owner);
 	CheckWorkflowRibbon(owner, argc >= 5 && wcscmp(argv[3], L"--workflow-preview") == 0 ? argv[4] : nullptr);
 	CheckVersionsToggle(owner, argc >= 7 && wcscmp(argv[5], L"--view-preview") == 0 ? argv[6] : nullptr);
+	CheckSelectors(owner, argc >= 9 && wcscmp(argv[7], L"--selectors-preview") == 0 ? argv[8] : nullptr);
 	HWND keyboard = QuickAccess::Create(owner, instance, callbacks);
 	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;

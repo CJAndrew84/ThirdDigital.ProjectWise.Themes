@@ -44,6 +44,9 @@ namespace QuickAccess
 			std::array<HWND, 3> modeButtons{};
 			HWND searchText = nullptr;
 			HWND searchButton = nullptr;
+			std::array<HWND, kSelectorCount> selectors{}, selectorLabels{};
+			SelectorStates selectorStates;
+			bool forceSelectors = false;
 			WorkflowState workflow;
 			std::vector<HWND> workflowButtons;
 			Tab tab = Tab::Home;
@@ -79,6 +82,65 @@ namespace QuickAccess
 		}
 
 		bool LayoutRibbon(HWND window, WindowState& state) noexcept;
+
+		bool HasSelectors(const WindowState& state) noexcept
+		{
+			return state.host.refreshSelectors != nullptr && state.host.selectChoice != nullptr;
+		}
+
+		bool ButtonOnPage(const WindowState& state, std::size_t button) noexcept
+		{
+			return ButtonTab(button) == state.tab && !(HasSelectors(state) && button == kInterfaceDialog);
+		}
+
+		int SelectorIndex(const WindowState& state, HWND control) noexcept
+		{
+			for (std::size_t i = 0; i < state.selectors.size(); ++i) if (state.selectors[i] == control && control != nullptr) return static_cast<int>(i);
+			return -1;
+		}
+
+		bool ValidSelector(const SelectorState& selector) noexcept
+		{
+			if (selector.choices.size() > 1024 || selector.selected < -1 || selector.selected >= static_cast<int>(selector.choices.size())) return false;
+			if (!selector.choices.empty() && selector.context.empty()) return false;
+			for (std::size_t i = 0; i < selector.choices.size(); ++i)
+			{
+				if (selector.choices[i].label.empty()) return false;
+				for (std::size_t j = 0; j < i; ++j) if (selector.choices[i].id == selector.choices[j].id) return false;
+			}
+			return true;
+		}
+
+		bool ComboPopupContains(HWND combo, HWND target) noexcept
+		{
+			if (combo == nullptr || SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0) == 0) return false;
+			COMBOBOXINFO info{sizeof(info)};
+			return target == combo || IsChild(combo, target) || (GetComboBoxInfo(combo, &info) && target == info.hwndList);
+		}
+
+		void UpdateSelectors(WindowState& state, SelectorStates fresh)
+		{
+			for (const auto& selector : fresh) if (!ValidSelector(selector)) { fresh = {}; break; }
+			for (std::size_t i = 0; i < state.selectors.size(); ++i)
+			{
+				const HWND combo = state.selectors[i];
+				auto& before = state.selectorStates[i];
+				const auto& after = fresh[i];
+				if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0) != 0 && after.enabled && before.context == after.context) continue;
+				if (SendMessageW(combo, CB_GETDROPPEDSTATE, 0, 0) != 0) SendMessageW(combo, CB_SHOWDROPDOWN, FALSE, 0);
+				if (before.context != after.context || before.choices != after.choices)
+				{
+					SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+					for (const auto& choice : after.choices)
+						if (SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(choice.label.c_str())) < 0) throw std::bad_alloc();
+					SendMessageW(combo, CB_SETDROPPEDWIDTH, MulDiv(360, static_cast<int>(GetDpiForWindow(combo)), 96), 0);
+					NotifyWinEvent(EVENT_OBJECT_REORDER, combo, OBJID_CLIENT, CHILDID_SELF);
+				}
+				SendMessageW(combo, CB_SETCURSEL, after.selected, 0);
+				EnableWindow(combo, after.enabled && !after.choices.empty());
+				before = std::move(fresh[i]);
+			}
+		}
 
 		int WorkflowButton(const WindowState& state, HWND control) noexcept
 		{
@@ -179,7 +241,9 @@ namespace QuickAccess
 				Trace(L"could not initialise native accessibility annotations");
 				return false;
 			}
-			return Annotate(state, state.tabs, L"ProjectWise ribbon tabs", L"Use Left and Right Arrow to select a tab. F6 moves to navigation.", L"Alt+R") &&
+			return Annotate(state, state.selectors[0], L"Interface", L"Choose a ProjectWise attribute interface. Alt+Down opens the list; Enter applies a selection.") &&
+				Annotate(state, state.selectors[1], L"View", L"Choose a document-list column view. Alt+Down opens the list; Enter applies a selection.") &&
+				Annotate(state, state.tabs, L"ProjectWise ribbon tabs", L"Use Left and Right Arrow to select a tab. F6 moves to navigation.", L"Alt+R") &&
 				Annotate(state, state.toolbar, L"Home commands", L"Use arrow keys to select a command and Enter or Space to run it.") &&
 				Annotate(state, state.searchText, L"Search ProjectWise", L"Enter a simple search expression, then press Enter.") &&
 				Annotate(state, state.address, L"ProjectWise location", L"Editable ProjectWise address. Enter a location and press Enter to navigate.", L"F6") &&
@@ -192,7 +256,7 @@ namespace QuickAccess
 		{
 			if (state.accessibility == nullptr) return;
 			const HWND controls[] = {state.tabs, state.toolbar, state.searchText, state.address,
-				state.modeButtons[0], state.modeButtons[1], state.modeButtons[2]};
+				state.modeButtons[0], state.modeButtons[1], state.modeButtons[2], state.selectors[0], state.selectors[1]};
 			const MSAAPROPID properties[] = {PROPID_ACC_NAME, PROPID_ACC_DESCRIPTION, PROPID_ACC_KEYBOARDSHORTCUT};
 			for (const HWND control : controls)
 				if (control != nullptr) state.accessibility->ClearHwndProps(control, static_cast<DWORD>(OBJID_CLIENT), CHILDID_SELF, properties, ARRAYSIZE(properties));
@@ -218,7 +282,7 @@ namespace QuickAccess
 
 		void RevealControl(WindowState& state, HWND control) noexcept
 		{
-			if (control != state.searchText && control != state.searchButton && WorkflowButton(state, control) < 0) return;
+			if (control != state.searchText && control != state.searchButton && WorkflowButton(state, control) < 0 && SelectorIndex(state, control) < 0) return;
 			RECT item{}, viewport{};
 			GetWindowRect(control, &item);
 			MapWindowPoints(nullptr, state.page, reinterpret_cast<POINT*>(&item), 2);
@@ -234,11 +298,11 @@ namespace QuickAccess
 			if (control == state.toolbar)
 			{
 				int candidate = state.focusedCommand;
-				if (candidate < 0 || ButtonTab(static_cast<std::size_t>(candidate)) != state.tab ||
+				if (candidate < 0 || !ButtonOnPage(state, static_cast<std::size_t>(candidate)) ||
 					SendMessageW(control, TB_ISBUTTONENABLED, kFirstButton + candidate, 0) == 0) candidate = -1;
 				for (std::size_t i = 0; i < kButtonCount; ++i)
 				{
-					if (candidate < 0 && ButtonTab(i) == state.tab && SendMessageW(control, TB_ISBUTTONENABLED, kFirstButton + i, 0) != 0)
+					if (candidate < 0 && ButtonOnPage(state, i) && SendMessageW(control, TB_ISBUTTONENABLED, kFirstButton + i, 0) != 0)
 					{
 						candidate = static_cast<int>(i);
 						break;
@@ -709,11 +773,17 @@ namespace QuickAccess
 				if (ButtonTab(group.first) != state.tab) continue;
 				RECT first{}, last{};
 				SendMessageW(state.toolbar, TB_GETITEMRECT, group.first, reinterpret_cast<LPARAM>(&first));
-				SendMessageW(state.toolbar, TB_GETITEMRECT, group.end - 1, reinterpret_cast<LPARAM>(&last));
+				const auto lastIndex = HasSelectors(state) && group.end - 1 == kInterfaceDialog ? group.end - 2 : group.end - 1;
+				SendMessageW(state.toolbar, TB_GETITEMRECT, lastIndex, reinterpret_cast<LPARAM>(&last));
 				RECT caption{toolbar.left + first.left, toolbar.bottom, toolbar.left + last.right, client.bottom};
 				Text(dc, state.font, group.label, caption, ContrastColour(Blend(GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_WINDOW), 72), GetSysColor(COLOR_WINDOW), 4.5));
 				RECT divider{caption.right - 1, MulDiv(8, dpi, 96), caption.right, client.bottom - MulDiv(6, dpi, 96)};
 				Fill(dc, divider, Blend(GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_WINDOW), 15));
+			}
+			if (state.tab == Tab::View && HasSelectors(state))
+			{
+				RECT caption{toolbar.right + MulDiv(12, dpi, 96), toolbar.bottom, client.right, client.bottom};
+				Text(dc, state.font, L"Interface & View", caption, ContrastColour(GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_WINDOW), 4.5));
 			}
 			if (state.tab == Tab::Search)
 			{
@@ -727,6 +797,13 @@ namespace QuickAccess
 			const HWND window = reinterpret_cast<HWND>(data);
 			const auto* state = State(window);
 			if (message == WM_NCDESTROY) RemoveWindowSubclass(panel, PanelProc, id);
+			if (message == WM_CTLCOLORSTATIC && state != nullptr && panel == state->page)
+			{
+				const HDC dc = reinterpret_cast<HDC>(wParam);
+				SetTextColor(dc, ContrastColour(GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_WINDOW), 4.5));
+				SetBkColor(dc, GetSysColor(COLOR_WINDOW));
+				return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+			}
 			if (message == WM_COMMAND || message == WM_NOTIFY || message == WM_DRAWITEM)
 				return SendMessageW(window, message, wParam, lParam);
 			if (message == WM_ERASEBKGND) return 1;
@@ -772,12 +849,15 @@ namespace QuickAccess
 				auto& message = *reinterpret_cast<MSG*>(lParam);
 				bool escape = message.message == WM_KEYDOWN && message.wParam == VK_ESCAPE;
 				const auto* state = State(g_popup);
+				bool comboPopup = state != nullptr && ComboPopupContains(state->address, message.hwnd);
+				if (state != nullptr) for (const HWND combo : state->selectors) comboPopup = comboPopup || ComboPopupContains(combo, message.hwnd);
+				if (escape && comboPopup) escape = false;
 				if (escape && state != nullptr && state->address != nullptr &&
 					(message.hwnd == state->address || IsChild(state->address, message.hwnd)) &&
 					SendMessageW(state->address, CB_GETDROPPEDSTATE, 0, 0) != 0) escape = false;
 				const bool click = message.message == WM_LBUTTONDOWN || message.message == WM_RBUTTONDOWN ||
 					message.message == WM_MBUTTONDOWN || message.message == WM_NCLBUTTONDOWN;
-				if (escape || (click && message.hwnd != g_popup && !IsChild(g_popup, message.hwnd)))
+				if (escape || (click && message.hwnd != g_popup && !IsChild(g_popup, message.hwnd) && !comboPopup))
 				{
 					DismissPopup(g_popup);
 					if (escape) message.message = WM_NULL;
@@ -823,6 +903,21 @@ namespace QuickAccess
 			if (ControlKey(reinterpret_cast<HWND>(data), message, wParam)) return 0;
 			if (message == WM_CHAR && wParam == VK_RETURN) return 0;
 			return DefSubclassProc(edit, message, wParam, lParam);
+		}
+
+		LRESULT CALLBACK SelectorProc(HWND combo, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data)
+		{
+			const HWND window = reinterpret_cast<HWND>(data);
+			if (message == WM_NCDESTROY) RemoveWindowSubclass(combo, SelectorProc, id);
+			if (message == WM_GETDLGCODE)
+			{
+				const auto* key = reinterpret_cast<MSG*>(lParam);
+				return DefSubclassProc(combo, message, wParam, lParam) | DLGC_WANTARROWS |
+					(key != nullptr && (key->wParam == VK_RETURN || key->wParam == VK_TAB || key->wParam == VK_ESCAPE) ? DLGC_WANTMESSAGE : 0);
+			}
+			if (message == WM_SETFOCUS) if (auto* state = State(window)) RevealControl(*state, combo);
+			if (ControlKey(window, message, wParam)) return 0;
+			return DefSubclassProc(combo, message, wParam, lParam);
 		}
 
 		bool ArrangeDock(HWND window, WindowState& state) noexcept
@@ -909,13 +1004,14 @@ namespace QuickAccess
 			const bool commands = !hidden && (state.mode == DisplayMode::Expanded || state.popup);
 			const bool workflow = state.tab == Tab::Workflow;
 			for (std::size_t i = 0; i < kButtonCount; ++i)
-				SendMessageW(state.toolbar, TB_HIDEBUTTON, kFirstButton + i, MAKELPARAM(ButtonTab(i) != state.tab, 0));
+				SendMessageW(state.toolbar, TB_HIDEBUTTON, kFirstButton + i, MAKELPARAM(!ButtonOnPage(state, i), 0));
 			SendMessageW(state.toolbar, TB_AUTOSIZE, 0, 0);
 			SIZE size{};
 			bool success = SendMessageW(state.toolbar, TB_GETMAXSIZE, 0, reinterpret_cast<LPARAM>(&size)) != 0;
 			if (workflow) size = {scale(160) * static_cast<LONG>(std::max<std::size_t>(1, state.workflowButtons.size())), scale(80)};
 			const bool search = state.tab == Tab::Search;
-			const int contentWidth = size.cx + (search ? scale(420) : 0);
+			const bool selectors = state.tab == Tab::View && HasSelectors(state);
+			const int contentWidth = size.cx + (search ? scale(420) : selectors ? scale(372) : 0);
 			const int width = state.dockClient != nullptr ? state.dockRect.right - state.dockRect.left :
 				std::max(contentWidth + grip + scale(8), scale(800));
 			const int available = std::max(1, width - grip - scale(8));
@@ -958,6 +1054,15 @@ namespace QuickAccess
 				SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
 			ShowWindow(state.searchText, commands && search ? SW_SHOWNOACTIVATE : SW_HIDE);
 			ShowWindow(state.searchButton, commands && search ? SW_SHOWNOACTIVATE : SW_HIDE);
+			for (std::size_t i = 0; i < state.selectors.size(); ++i)
+			{
+				if (state.selectors[i] == nullptr) continue;
+				const int top = scale(4 + static_cast<int>(i) * 32);
+				success = SetWindowPos(state.selectorLabels[i], nullptr, x + size.cx + scale(12), top + scale(3), scale(76), scale(24), SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
+				success = SetWindowPos(state.selectors[i], nullptr, x + size.cx + scale(92), top, scale(268), scale(260), SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
+				ShowWindow(state.selectorLabels[i], commands && selectors ? SW_SHOWNOACTIVATE : SW_HIDE);
+				ShowWindow(state.selectors[i], commands && selectors ? SW_SHOWNOACTIVATE : SW_HIDE);
+			}
 			if (state.navigation != nullptr)
 			{
 				const int navigationTop = state.mode == DisplayMode::Expanded ? header + commandHeight : header;
@@ -1048,6 +1153,13 @@ namespace QuickAccess
 			for (HWND button : state.navigationButtons)
 				if (button != nullptr) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
 			for (HWND button : state.workflowButtons) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+			for (std::size_t i = 0; i < state.selectors.size(); ++i)
+			{
+				if (state.selectors[i] == nullptr) continue;
+				SendMessageW(state.selectorLabels[i], WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+				SendMessageW(state.selectors[i], WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+				SendMessageW(state.selectors[i], CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), scale(24));
+			}
 			if (state.images != nullptr) ImageList_Destroy(state.images);
 			if (state.font != nullptr) DeleteObject(state.font);
 			state.images = images;
@@ -1112,6 +1224,18 @@ namespace QuickAccess
 				button.iString = reinterpret_cast<INT_PTR>(kLabels[i]);
 			}
 			if (!SendMessageW(state.toolbar, TB_ADDBUTTONS, buttons.size(), reinterpret_cast<LPARAM>(buttons.data()))) return false;
+			if (HasSelectors(state))
+			{
+				constexpr const wchar_t* labels[] = {L"Interface", L"View"};
+				for (std::size_t i = 0; i < state.selectors.size(); ++i)
+				{
+					state.selectorLabels[i] = CreateWindowExW(0, L"STATIC", labels[i], WS_CHILD | SS_LEFT, 0, 0, 0, 0, state.page, nullptr, instance, nullptr);
+					state.selectors[i] = CreateWindowExW(0, L"COMBOBOX", nullptr, WS_CHILD | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+						0, 0, 268, 260, state.page, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(kFirstSelector + i)), instance, nullptr);
+					if (state.selectorLabels[i] == nullptr || state.selectors[i] == nullptr ||
+						!SetWindowSubclass(state.selectors[i], SelectorProc, 1, reinterpret_cast<DWORD_PTR>(window))) return false;
+				}
+			}
 			if (state.host.createAddress != nullptr)
 			{
 				state.navigation = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"ProjectWise navigation", WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN,
@@ -1283,6 +1407,20 @@ namespace QuickAccess
 				}
 				return 0;
 			case WM_COMMAND:
+				if (state != nullptr && LOWORD(wParam) >= kFirstSelector && LOWORD(wParam) < kFirstSelector + kSelectorCount &&
+					SelectorIndex(*state, reinterpret_cast<HWND>(lParam)) == static_cast<int>(LOWORD(wParam) - kFirstSelector))
+				{
+					if (state->busy) return 0;
+					const int index = static_cast<int>(LOWORD(wParam) - kFirstSelector);
+					if (HIWORD(wParam) == CBN_SELENDOK)
+						SelectChoice(window, static_cast<Selector>(index), static_cast<std::size_t>(SendMessageW(state->selectors[index], CB_GETCURSEL, 0, 0)));
+					else if (HIWORD(wParam) == CBN_DROPDOWN || HIWORD(wParam) == CBN_SETFOCUS || HIWORD(wParam) == CBN_CLOSEUP)
+					{
+						state->forceSelectors = HIWORD(wParam) != CBN_CLOSEUP;
+						Refresh(window);
+					}
+					return 0;
+				}
 				if (LOWORD(wParam) >= kFirstWorkflow && LOWORD(wParam) < kFirstWorkflow + kMaxWorkflowActions &&
 					state != nullptr && WorkflowButton(*state, reinterpret_cast<HWND>(lParam)) == static_cast<int>(LOWORD(wParam) - kFirstWorkflow))
 				{
@@ -1372,6 +1510,14 @@ namespace QuickAccess
 		}
 	}
 
+	bool CanSelectChoice(const SelectorState& shown, const SelectorState& current, std::size_t choice) noexcept
+	{
+		if (!shown.enabled || !current.enabled || shown.context.empty() || shown.context != current.context ||
+			!ValidSelector(shown) || !ValidSelector(current) || choice >= shown.choices.size()) return false;
+		const auto& item = shown.choices[choice];
+		return std::find(current.choices.begin(), current.choices.end(), item) != current.choices.end();
+	}
+
 	double ContrastRatio(COLORREF first, COLORREF second) noexcept
 	{
 		const auto luminance = [](COLORREF colour) {
@@ -1444,6 +1590,7 @@ namespace QuickAccess
 			return true;
 		}
 		const int workflowFocus = WorkflowButton(*state, focus);
+		const int selectorFocus = SelectorIndex(*state, focus);
 		if (workflowFocus >= 0 && (key == VK_LEFT || key == VK_RIGHT || key == VK_HOME || key == VK_END))
 		{
 			const int count = static_cast<int>(state->workflowButtons.size()), direction = key == VK_LEFT || key == VK_END ? -1 : 1;
@@ -1460,7 +1607,7 @@ namespace QuickAccess
 			if (key == VK_END) current = static_cast<int>(kButtonCount);
 			for (int i = current + direction; i >= 0 && i < static_cast<int>(kButtonCount); i += direction)
 			{
-				if (ButtonTab(static_cast<std::size_t>(i)) != state->tab || SendMessageW(state->toolbar, TB_ISBUTTONENABLED, kFirstButton + i, 0) == 0) continue;
+				if (!ButtonOnPage(*state, static_cast<std::size_t>(i)) || SendMessageW(state->toolbar, TB_ISBUTTONENABLED, kFirstButton + i, 0) == 0) continue;
 				RevealCommand(*state, static_cast<std::size_t>(i));
 				break;
 			}
@@ -1468,6 +1615,7 @@ namespace QuickAccess
 		}
 		if (key == VK_ESCAPE)
 		{
+			if (selectorFocus >= 0 && SendMessageW(focus, CB_GETDROPPEDSTATE, 0, 0) != 0) return false;
 			if (state->address != nullptr && (focus == state->address || IsChild(state->address, focus)) &&
 				SendMessageW(state->address, CB_GETDROPPEDSTATE, 0, 0) != 0) return false;
 			if (state->popup) { DismissPopup(window); return FocusControl(*state, state->tabs); }
@@ -1485,6 +1633,11 @@ namespace QuickAccess
 		}
 		if (key == VK_RETURN)
 		{
+			if (selectorFocus >= 0)
+			{
+				SelectChoice(window, static_cast<Selector>(selectorFocus), static_cast<std::size_t>(SendMessageW(focus, CB_GETCURSEL, 0, 0)));
+				return true;
+			}
 			// These controls are hosted in a normal MFC frame, without a dialog manager to translate Enter.
 			if (focus == state->searchText)
 			{
@@ -1500,9 +1653,15 @@ namespace QuickAccess
 			}
 		}
 		if (key != VK_TAB || control || alt) return false;
+		if (selectorFocus >= 0)
+		{
+			SendMessageW(focus, CB_SHOWDROPDOWN, FALSE, 0);
+			if (State(window) != state) return true;
+		}
 		const HWND targets[] = {state->tabs, state->modeButtons[0], state->modeButtons[1], state->modeButtons[2],
 			state->tab == Tab::Workflow ? WorkflowEntry(*state) : state->toolbar,
-			state->searchText, state->searchButton, state->navigationButtons[0], state->navigationButtons[1], state->navigationButtons[2], state->address};
+			state->searchText, state->searchButton, state->selectors[0], state->selectors[1],
+			state->navigationButtons[0], state->navigationButtons[1], state->navigationButtons[2], state->address};
 		int current = -1;
 		for (int i = 0; i < static_cast<int>(ARRAYSIZE(targets)); ++i)
 			if (targets[i] != nullptr && (focus == targets[i] || IsChild(targets[i], focus))) current = i;
@@ -1824,6 +1983,26 @@ namespace QuickAccess
 				ResetWorkflow(*state);
 			}
 		}
+		if (HasSelectors(*state))
+		{
+			try
+			{
+				SelectorStates selectors;
+				const bool force = state->forceSelectors;
+				state->forceSelectors = false;
+				const bool ready = IsWindowEnabled(state->owner) && state->host.refreshSelectors(state->host.context, selectors, force);
+				if (State(window) != state) return;
+				if (!ready) selectors = {};
+				UpdateSelectors(*state, std::move(selectors));
+			}
+			catch (...)
+			{
+				if (State(window) != state) return;
+				state->selectorStates = {};
+				for (const HWND combo : state->selectors) { SendMessageW(combo, CB_RESETCONTENT, 0, 0); EnableWindow(combo, FALSE); }
+				Trace(L"could not refresh Interface and View selectors");
+			}
+		}
 		state->busy = false;
 		if (GetFocus() == state->toolbar && (state->focusedCommand < 0 ||
 			SendMessageW(state->toolbar, TB_ISBUTTONENABLED, kFirstButton + state->focusedCommand, 0) == 0))
@@ -1866,7 +2045,7 @@ namespace QuickAccess
 		auto* state = State(window);
 		if (state == nullptr || state->busy || buttonId < kFirstButton || buttonId >= kFirstButton + kButtonCount) return false;
 		if (state->mode == DisplayMode::Hidden || (state->mode == DisplayMode::Minimized && !state->popup) ||
-			ButtonTab(buttonId - kFirstButton) != state->tab) return false;
+			!ButtonOnPage(*state, buttonId - kFirstButton)) return false;
 		state->busy = true;
 		States states{};
 		const auto button = buttonId - kFirstButton;
@@ -1907,6 +2086,36 @@ namespace QuickAccess
 		{
 			if (State(window) == state) { state->busy = false; ResetWorkflow(*state); }
 			Trace(L"workflow operation could not be dispatched");
+			return false;
+		}
+	}
+
+	bool SelectChoice(HWND window, Selector selector, std::size_t choice) noexcept
+	{
+		auto* state = State(window);
+		const auto index = static_cast<std::size_t>(selector);
+		if (state == nullptr || state->busy || index >= kSelectorCount || !HasSelectors(*state) || !IsWindowEnabled(state->owner) ||
+			state->tab != Tab::View || state->mode == DisplayMode::Hidden || (state->mode == DisplayMode::Minimized && !state->popup)) return false;
+		try
+		{
+			const SelectorState shown = state->selectorStates[index];
+			state->busy = true;
+			SendMessageW(state->selectors[index], CB_SHOWDROPDOWN, FALSE, 0);
+			SelectorStates current;
+			const bool ready = state->host.refreshSelectors(state->host.context, current, true);
+			if (State(window) != state) return false;
+			const bool result = ready && CanSelectChoice(shown, current[index], choice) &&
+				state->host.selectChoice(state->host.context, selector, shown, choice);
+			if (State(window) != state) return result;
+			state->busy = false;
+			if (result) DismissPopup(window);
+			Refresh(window);
+			return result;
+		}
+		catch (...)
+		{
+			if (State(window) == state) { state->busy = false; Refresh(window); }
+			Trace(L"Interface or View selection could not be applied");
 			return false;
 		}
 	}
