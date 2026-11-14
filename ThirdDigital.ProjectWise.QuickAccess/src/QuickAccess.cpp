@@ -5,6 +5,7 @@
 #include <oleacc.h>
 #include <algorithm>
 #include <cmath>
+#include <cwchar>
 #include <cwctype>
 #include <initializer_list>
 #include <new>
@@ -21,7 +22,7 @@ namespace QuickAccess
 		constexpr const wchar_t* kLabels[] = {L"New Folder", L"Add Documents", L"Check Out", L"Check In", L"Free", L"Properties", L"Refresh",
 			L"Open", L"New Document", L"Thumbnails", L"Large Icons", L"Small Icons", L"List", L"Details", L"Manage Views", L"Interface",
 			L"Advanced Search", L"Find in Folder", L"Local Documents", L"User Settings", L"Wizard Manager", L"Help Index", L"Show all versions"};
-		constexpr const wchar_t* kTabs[] = {L"Home", L"View", L"Search", L"Tools", L"Workflow", L"Admin"};
+		constexpr const wchar_t* kTabs[] = {L"Home", L"View", L"Search", L"Tools", L"Workflow", L"DataSource Admin", L"Project Admin"};
 		constexpr UINT kRecover = WM_APP + 101;
 		static_assert(ARRAYSIZE(kLabels) == kButtonCount);
 		thread_local HWND g_popup = nullptr;
@@ -53,6 +54,8 @@ namespace QuickAccess
 			std::vector<HWND> workflowButtons;
 			ContextState admin;
 			std::vector<HWND> adminButtons;
+			ContextState projectAdmin;
+			std::vector<HWND> projectAdminButtons;
 			bool failurePending = false;
 			Tab tab = Tab::Home;
 			DisplayMode mode = DisplayMode::Expanded;
@@ -87,11 +90,12 @@ namespace QuickAccess
 		}
 
 		bool LayoutRibbon(HWND window, WindowState& state) noexcept;
-		bool Contextual(Tab tab) noexcept { return tab == Tab::Workflow || tab == Tab::Admin; }
-		ContextState& Context(WindowState& state, Tab tab) noexcept { return tab == Tab::Admin ? state.admin : state.workflow; }
-		const ContextState& Context(const WindowState& state, Tab tab) noexcept { return tab == Tab::Admin ? state.admin : state.workflow; }
-		std::vector<HWND>& ContextButtons(WindowState& state, Tab tab) noexcept { return tab == Tab::Admin ? state.adminButtons : state.workflowButtons; }
-		const std::vector<HWND>& ContextButtons(const WindowState& state, Tab tab) noexcept { return tab == Tab::Admin ? state.adminButtons : state.workflowButtons; }
+		UINT FirstContextButton(Tab tab) noexcept { return tab == Tab::ProjectAdmin ? kFirstProjectAdmin : tab == Tab::Admin ? kFirstAdmin : kFirstWorkflow; }
+		bool Contextual(Tab tab) noexcept { return tab == Tab::Workflow || tab == Tab::Admin || tab == Tab::ProjectAdmin; }
+		ContextState& Context(WindowState& state, Tab tab) noexcept { return tab == Tab::ProjectAdmin ? state.projectAdmin : tab == Tab::Admin ? state.admin : state.workflow; }
+		const ContextState& Context(const WindowState& state, Tab tab) noexcept { return tab == Tab::ProjectAdmin ? state.projectAdmin : tab == Tab::Admin ? state.admin : state.workflow; }
+		std::vector<HWND>& ContextButtons(WindowState& state, Tab tab) noexcept { return tab == Tab::ProjectAdmin ? state.projectAdminButtons : tab == Tab::Admin ? state.adminButtons : state.workflowButtons; }
+		const std::vector<HWND>& ContextButtons(const WindowState& state, Tab tab) noexcept { return tab == Tab::ProjectAdmin ? state.projectAdminButtons : tab == Tab::Admin ? state.adminButtons : state.workflowButtons; }
 		Tab TabAt(HWND tabs, int index) noexcept
 		{
 			TCITEMW item{}; item.mask = TCIF_PARAM;
@@ -290,7 +294,7 @@ namespace QuickAccess
 			const MSAAPROPID properties[] = {PROPID_ACC_NAME, PROPID_ACC_DESCRIPTION, PROPID_ACC_KEYBOARDSHORTCUT};
 			for (const HWND control : controls)
 				if (control != nullptr) state.accessibility->ClearHwndProps(control, static_cast<DWORD>(OBJID_CLIENT), CHILDID_SELF, properties, ARRAYSIZE(properties));
-			for (const Tab tab : {Tab::Workflow, Tab::Admin}) for (const HWND control : ContextButtons(state, tab))
+			for (const Tab tab : {Tab::Workflow, Tab::Admin, Tab::ProjectAdmin}) for (const HWND control : ContextButtons(state, tab))
 				state.accessibility->ClearHwndProps(control, static_cast<DWORD>(OBJID_CLIENT), CHILDID_SELF, properties, ARRAYSIZE(properties));
 			state.accessibility->Release();
 			state.accessibility = nullptr;
@@ -518,8 +522,9 @@ namespace QuickAccess
 				Ellipse(dc, 3, 3, 15, 15); Ellipse(dc, 18, 7, 28, 17);
 				curve({{1, 29}, {1, 15}, {18, 15}, {18, 29}}); curve({{18, 29}, {18, 18}, {31, 18}, {31, 29}}); break;
 			case 29:
-				path({{10, 3}, {27, 3}, {27, 29}, {10, 29}}); line(2, 16, 22, 16);
-				path({{16, 10}, {22, 16}, {16, 22}}); break;
+				folder(); line(9, 16, 24, 16); line(9, 21, 21, 21); break;
+			case 30:
+				folder(); Rectangle(dc, 16, 18, 29, 30); curve({{18, 18}, {18, 10}, {27, 10}, {27, 18}}); line(23, 23, 23, 26); break;
 			default:
 				Ellipse(dc, 3, 3, 29, 29);
 				curve({{11, 11}, {11, 5}, {23, 6}, {21, 13}, {20, 16}, {16, 16}, {16, 20}});
@@ -648,7 +653,7 @@ namespace QuickAccess
 		{
 			auto& context = Context(state, tab);
 			auto& buttons = ContextButtons(state, tab);
-			const UINT firstButton = tab == Tab::Admin ? kFirstAdmin : kFirstWorkflow;
+			const UINT firstButton = FirstContextButton(tab);
 			std::vector<HWND> created;
 			try
 			{
@@ -682,7 +687,9 @@ namespace QuickAccess
 					item.mask = TCIF_TEXT | TCIF_PARAM;
 					item.lParam = static_cast<LPARAM>(tab);
 					item.pszText = const_cast<LPWSTR>(kTabs[static_cast<int>(tab)]);
-					if (TabCtrl_InsertItem(state.tabs, tab == Tab::Workflow ? 4 : TabCtrl_GetItemCount(state.tabs), &item) == -1) throw std::bad_alloc();
+					int position = 4;
+					while (position < TabCtrl_GetItemCount(state.tabs) && TabAt(state.tabs, position) < tab) ++position;
+					if (TabCtrl_InsertItem(state.tabs, position, &item) == -1) throw std::bad_alloc();
 				}
 				if (rebuild)
 				{
@@ -697,6 +704,7 @@ namespace QuickAccess
 				else
 				{
 					for (std::size_t i = 0; i < buttons.size(); ++i) EnableWindow(buttons[i], context.actions[i].enabled);
+					if (state.tab == tab) SetWindowTextW(state.page, context.status.empty() ? kTabs[static_cast<int>(tab)] : context.status.c_str());
 					LayoutRibbon(state.window, state);
 					const auto found = std::find(buttons.begin(), buttons.end(), GetFocus());
 					const int focused = found == buttons.end() ? -1 : static_cast<int>(found - buttons.begin());
@@ -725,8 +733,8 @@ namespace QuickAccess
 			const COLORREF background = hot || (draw.itemState & ODS_SELECTED) != 0 ? Blend(GetSysColor(COLOR_HOTLIGHT), face, 18) : face;
 			Fill(draw.hDC, draw.rcItem, background);
 			const COLORREF foreground = ContrastColour(enabled ? text : Blend(text, face, 60), background, 4.5);
-			const Tab contextTab = draw.CtlID >= kFirstAdmin ? Tab::Admin : Tab::Workflow;
-			const UINT firstAction = contextTab == Tab::Admin ? kFirstAdmin : kFirstWorkflow;
+			const Tab contextTab = draw.CtlID >= kFirstProjectAdmin ? Tab::ProjectAdmin : draw.CtlID >= kFirstAdmin ? Tab::Admin : Tab::Workflow;
+			const UINT firstAction = FirstContextButton(contextTab);
 			if (draw.CtlID >= firstAction && draw.CtlID - firstAction < Context(state, contextTab).actions.size())
 			{
 				const auto& action = Context(state, contextTab).actions[draw.CtlID - firstAction];
@@ -816,7 +824,7 @@ namespace QuickAccess
 			if (Contextual(state.tab))
 			{
 				RECT caption{0, client.bottom - MulDiv(24, dpi, 96), client.right, client.bottom};
-				Text(dc, state.font, state.tab == Tab::Admin ? L"Datasource administration" : state.workflow.actions.empty() ? L"Select documents to see workflow actions" :
+				Text(dc, state.font, state.tab == Tab::ProjectAdmin ? (state.projectAdmin.status.empty() ? L"Project administration" : state.projectAdmin.status.c_str()) : state.tab == Tab::Admin ? L"DataSource administration" : !state.workflow.status.empty() ? state.workflow.status.c_str() : state.workflow.actions.empty() ? L"Select documents to see workflow actions" :
 					state.workflow.rulesEngine ? L"Rules Engine operations" : L"Workflow transitions", caption,
 					ContrastColour(GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_WINDOW), 4.5));
 				return;
@@ -1084,7 +1092,20 @@ namespace QuickAccess
 			const int tabsWidth = std::max(1, width - grip);
 			const int commandHeight = commands ? size.cy + scale(28) : 0;
 			const int pageTop = header + (state.popup ? navigationHeight : 0);
-			TabCtrl_SetItemSize(state.tabs, std::min(scale(80), std::max(scale(24), (tabsWidth - 3 * modeWidth - scale(4)) / TabCtrl_GetItemCount(state.tabs))), scale(32));
+			int preferredTabWidth = scale(80);
+			if (HDC dc = GetDC(state.tabs))
+			{
+				const auto previous = state.font != nullptr ? SelectObject(dc, state.font) : nullptr;
+				for (int i = 0; i < TabCtrl_GetItemCount(state.tabs); ++i)
+				{
+					const auto* label = kTabs[static_cast<int>(TabAt(state.tabs, i))]; SIZE measured{};
+					if (GetTextExtentPoint32W(dc, label, static_cast<int>(std::wcslen(label)), &measured))
+						preferredTabWidth = std::max(preferredTabWidth, static_cast<int>(measured.cx) + scale(16));
+				}
+				if (previous != nullptr) SelectObject(dc, previous);
+				ReleaseDC(state.tabs, dc);
+			}
+			TabCtrl_SetItemSize(state.tabs, std::min(preferredTabWidth, std::max(scale(24), (tabsWidth - 3 * modeWidth - scale(4)) / TabCtrl_GetItemCount(state.tabs))), scale(32));
 			success = SetWindowPos(state.tabs, nullptr, grip, 0, tabsWidth, pageTop + commandHeight, SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
 			success = SetWindowPos(state.page, nullptr, scale(4), pageTop, available, commandHeight,
 				SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
@@ -1099,7 +1120,7 @@ namespace QuickAccess
 			const int x = -state.scroll;
 			success = SetWindowPos(state.toolbar, nullptr, x, scale(4), size.cx, size.cy, SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
 			ShowWindow(state.toolbar, commands && !workflow ? SW_SHOWNOACTIVATE : SW_HIDE);
-			for (const Tab context : {Tab::Workflow, Tab::Admin}) for (std::size_t i = 0; i < ContextButtons(state, context).size(); ++i)
+			for (const Tab context : {Tab::Workflow, Tab::Admin, Tab::ProjectAdmin}) for (std::size_t i = 0; i < ContextButtons(state, context).size(); ++i)
 			{
 				const HWND button = ContextButtons(state, context)[i];
 				success = SetWindowPos(button, nullptr, x + scale(160) * static_cast<int>(i), scale(4), scale(160), scale(80),
@@ -1216,7 +1237,7 @@ namespace QuickAccess
 			}
 			for (HWND button : state.navigationButtons)
 				if (button != nullptr) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
-			for (const Tab tab : {Tab::Workflow, Tab::Admin}) for (HWND button : ContextButtons(state, tab)) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+			for (const Tab tab : {Tab::Workflow, Tab::Admin, Tab::ProjectAdmin}) for (HWND button : ContextButtons(state, tab)) SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
 			if (state.classic != nullptr) SendMessageW(state.classic, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
 			for (std::size_t i = 0; i < state.selectors.size(); ++i)
 			{
@@ -1243,7 +1264,7 @@ namespace QuickAccess
 			INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES | ICC_TAB_CLASSES};
 			if (!InitCommonControlsEx(&controls)) return false;
 			const HINSTANCE instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window, GWLP_HINSTANCE));
-			state.tabs = CreateWindowExW(WS_EX_CONTROLPARENT, WC_TABCONTROLW, L"Ribbon tabs", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPCHILDREN | TCS_FIXEDWIDTH,
+			state.tabs = CreateWindowExW(WS_EX_CONTROLPARENT, WC_TABCONTROLW, L"Ribbon tabs", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPCHILDREN | TCS_FIXEDWIDTH | TCS_TOOLTIPS,
 				0, 0, 0, 0, window, nullptr, instance, nullptr);
 			if (state.tabs == nullptr || !SetWindowSubclass(state.tabs, TabProc, 1, reinterpret_cast<DWORD_PTR>(window))) return false;
 			state.page = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"Ribbon commands", WS_CHILD | WS_CLIPCHILDREN,
@@ -1479,6 +1500,12 @@ namespace QuickAccess
 				}
 				return 0;
 			case WM_COMMAND:
+				if (state != nullptr && LOWORD(wParam) >= kFirstProjectAdmin && LOWORD(wParam) < kFirstProjectAdmin + kMaxWorkflowActions &&
+					state->tab == Tab::ProjectAdmin && WorkflowButton(*state, reinterpret_cast<HWND>(lParam)) == static_cast<int>(LOWORD(wParam) - kFirstProjectAdmin))
+				{
+					InvokeProjectAdmin(window, LOWORD(wParam));
+					return 0;
+				}
 				if (state != nullptr && LOWORD(wParam) == kClassic && reinterpret_cast<HWND>(lParam) == state->classic)
 				{
 					if (IsWindowEnabled(state->owner) && state->host.restoreClassic != nullptr) state->host.restoreClassic(state->host.context);
@@ -1622,7 +1649,7 @@ namespace QuickAccess
 		const auto* state = State(window);
 		if (state == nullptr || state->failurePending || !IsWindow(state->tabs) || !IsWindow(state->page) || !IsWindow(state->toolbar)) return false;
 		for (const HWND button : state->modeButtons) if (!IsWindow(button)) return false;
-		for (const Tab tab : {Tab::Workflow, Tab::Admin}) for (const HWND button : ContextButtons(*state, tab)) if (!IsWindow(button)) return false;
+		for (const Tab tab : {Tab::Workflow, Tab::Admin, Tab::ProjectAdmin}) for (const HWND button : ContextButtons(*state, tab)) if (!IsWindow(button)) return false;
 		for (const HWND combo : state->selectors) if (combo != nullptr && !IsWindow(combo)) return false;
 		return state->classic == nullptr || IsWindow(state->classic);
 	}
@@ -1876,6 +1903,7 @@ namespace QuickAccess
 		}
 		if (state->tab != tab) state->focusedCommand = -1;
 		state->tab = tab;
+		SetWindowTextW(state->page, Contextual(tab) && !Context(*state, tab).status.empty() ? Context(*state, tab).status.c_str() : kTabs[static_cast<int>(tab)]);
 		state->scroll = 0;
 		TabCtrl_SetCurSel(state->tabs, TabIndex(state->tabs, tab));
 		if (!LayoutRibbon(window, *state)) { Trace(L"could not switch ribbon tabs"); return false; }
@@ -2087,14 +2115,22 @@ namespace QuickAccess
 				if (State(window) != state) return;
 				EnableWindow(state->address, addressReady);
 			}
-			for (const Tab tab : {Tab::Workflow, Tab::Admin})
+			for (const Tab tab : {Tab::Workflow, Tab::Admin, Tab::ProjectAdmin})
 			{
-				const auto query = tab == Tab::Admin ? state->host.refreshAdmin : state->host.refreshWorkflow;
+				const auto query = tab == Tab::ProjectAdmin ? state->host.refreshProjectAdmin : tab == Tab::Admin ? state->host.refreshAdmin : state->host.refreshWorkflow;
 				if (query == nullptr) continue;
 				try
 				{
 					ContextState context;
-					const bool ready = IsWindowEnabled(state->owner) && query(state->host.context, context);
+					bool ready = true;
+					if (!IsWindowEnabled(state->owner))
+					{
+						// A modal host dialog is temporary unavailability, not evidence that the folder/role context disappeared.
+						context = Context(*state, tab);
+						for (auto& action : context.actions) action.enabled = false;
+						if (tab == Tab::Workflow && context.visible) context.status = L"Close the active ProjectWise dialog to use workflow actions.";
+					}
+					else ready = query(state->host.context, context);
 					if (State(window) != state) return;
 					if (!ready) context = {};
 					if (!UpdateContext(*state, tab, std::move(context))) ResetContext(*state, tab);
@@ -2208,10 +2244,10 @@ namespace QuickAccess
 	bool InvokeContext(HWND window, Tab tab, UINT buttonId) noexcept
 	{
 		auto* state = State(window);
-		const UINT firstButton = tab == Tab::Admin ? kFirstAdmin : kFirstWorkflow;
+		const UINT firstButton = FirstContextButton(tab);
 		if (state == nullptr) return false;
-		const auto query = tab == Tab::Admin ? state->host.refreshAdmin : state->host.refreshWorkflow;
-		const auto execute = tab == Tab::Admin ? state->host.executeAdmin : state->host.executeWorkflow;
+		const auto query = tab == Tab::ProjectAdmin ? state->host.refreshProjectAdmin : tab == Tab::Admin ? state->host.refreshAdmin : state->host.refreshWorkflow;
+		const auto execute = tab == Tab::ProjectAdmin ? state->host.executeProjectAdmin : tab == Tab::Admin ? state->host.executeAdmin : state->host.executeWorkflow;
 		if (state == nullptr || state->busy || state->failurePending || !IsWindowEnabled(state->owner) || state->tab != tab ||
 			state->mode == DisplayMode::Hidden || (state->mode == DisplayMode::Minimized && !state->popup) ||
 			buttonId < firstButton || buttonId - firstButton >= Context(*state, tab).actions.size() ||
@@ -2241,6 +2277,7 @@ namespace QuickAccess
 
 	bool InvokeWorkflow(HWND window, UINT buttonId) noexcept { return InvokeContext(window, Tab::Workflow, buttonId); }
 	bool InvokeAdmin(HWND window, UINT buttonId) noexcept { return InvokeContext(window, Tab::Admin, buttonId); }
+	bool InvokeProjectAdmin(HWND window, UINT buttonId) noexcept { return InvokeContext(window, Tab::ProjectAdmin, buttonId); }
 
 	bool SelectChoice(HWND window, Selector selector, std::size_t choice) noexcept
 	{

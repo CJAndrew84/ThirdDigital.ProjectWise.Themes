@@ -9,12 +9,15 @@
 #include "Admin.h"
 #include "ClassicUi.h"
 #include "VersionStacksAdapter.h"
+#include "NotificationAdapter.h"
+#include "UserManagerAdapter.h"
 
 #include <array>
 #include <cwchar>
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <new>
 
 namespace
 {
@@ -553,18 +556,34 @@ namespace
 		}
 		selection.workflow = g_workflowId;
 		if (selection.workflow <= 0) return true;
+		result.visible = true; // Folder context controls visibility; selection controls action availability.
+		result.context = std::to_wstring(reinterpret_cast<UINT_PTR>(selection.source)) + L"/" + std::to_wstring(aaApi_GetCurrentUserId()) +
+			L"/" + std::to_wstring(selection.folder) + L"/" + std::to_wstring(selection.workflow);
 		const HWND listControl = aaApi_GetDocumentListCtrl(selection.list);
-		if (!IsWindow(listControl)) return false;
+		if (!IsWindow(listControl)) { result.status = L"Document selection is unavailable. Reselect the folder or refresh."; return true; }
+		if (ListView_GetSelectedCount(listControl) > 256) { result.status = L"Select up to 256 documents for ribbon workflow actions."; return true; }
 		std::vector<std::wstring> identities;
 		for (int index = ListView_GetNextItem(listControl, -1, LVNI_SELECTED); index != -1; index = ListView_GetNextItem(listControl, index, LVNI_SELECTED))
 		{
 			AADOCLIST_ITEM item{};
 			item.iItem = index;
 			item.ulMask = AADOCITEM_PROJECTNO | AADOCITEM_DOCNO | AADOCITEM_FLAGS | AADOCITEM_VERSIONSEQ;
-			if (!aaApi_DocListGetItem(selection.list, &item)) return false;
-			// A mixed folder/document/non-workflow selection must not operate on an undisclosed subset.
-			if (item.lDocumentId <= 0 || item.lProjectId != selection.folder || (item.ulFlags & AADOCIF_WORKFL) == 0) return true;
-			selection.documents.push_back({item.lProjectId, item.lDocumentId});
+			if (!aaApi_DocListGetItem(selection.list, &item)) { result.status = L"The selection is changing. Select documents again."; return true; }
+			if (item.lDocumentId <= 0 || item.lProjectId != selection.folder)
+			{ result.status = L"Select documents in the current workflow folder; mixed folder/document selections are unavailable."; selection.documents.clear(); return true; }
+			// AADOCIF_WORKFL is a display hint, not a reliable assignment/permission test for every list implementation.
+			// Native menus decide availability; invocation additionally verifies actual document workflow metadata.
+			if (force)
+			{
+				OwnedBuffer document{aaApi_SelectDocumentDataBuffer(item.lProjectId, item.lDocumentId)};
+				if (!document.value || aaApi_DmsDataBufferGetCount(document.value) != 1 ||
+					aaApi_DmsDataBufferGetNumericProperty(document.value, DOC_PROP_WORKFLOWID, 0) != selection.workflow ||
+					aaApi_DmsDataBufferGetNumericProperty(document.value, DOC_PROP_VERSIONNO, 0) != item.versionSeq)
+				{ result.status = L"A selected document has no matching workflow, changed version or cannot be read. Refresh and select it again."; selection.documents.clear(); return true; }
+			}
+			if (std::none_of(selection.documents.begin(), selection.documents.end(), [&](const auto& document) {
+				return document.lProjectId == item.lProjectId && document.lDocumentId == item.lDocumentId; }))
+				selection.documents.push_back({item.lProjectId, item.lDocumentId});
 			identities.push_back(std::to_wstring(item.lProjectId) + L":" + std::to_wstring(item.lDocumentId) + L":" +
 				std::to_wstring(item.versionSeq) + L":" + std::to_wstring(item.ulFlags));
 		}
@@ -578,10 +597,11 @@ namespace
 		if (menu.value == nullptr) return false;
 		const HMENU documents = aaApi_InsertMenuByType(AAMENU_DOCUMENT, menu.value, 0);
 		if (documents == nullptr || aaApi_InitMenuByAaControl(selection.list, documents,
-			AAMG_MODIFY | AAMG_WORKFLOW | AAMG_CUSTOMS | AAMG_PROPERTIES | AAMG_VIEW) == 0) return selection.documents.empty();
+			AAMG_MODIFY | AAMG_WORKFLOW | AAMG_CUSTOMS | AAMG_PROPERTIES | AAMG_VIEW) == 0)
+		{ result.status = L"ProjectWise workflow actions are unavailable for this selection."; return true; }
 		const QuickAccess::WorkflowMenuIds ids{IDMD_CHANGE_NEXT_STATE, IDMD_CHANGE_PREV_STATE, IDMD_STATE, IDMD_SET_FINAL, IDMD_REMOVE_FINAL};
 		if (!QuickAccess::ReadWorkflowMenu(documents, ids, !selection.documents.empty() && selection.control == selection.list, result))
-			return selection.documents.empty();
+		{ result.status = L"ProjectWise exposed no workflow actions for this selection. Check Document > Change State."; return true; }
 		// Preserve the SDK-initialised menu while its extension command IDs are displayed/used.
 		std::swap(g_workflowMenu, menu.value);
 		return true;
@@ -613,9 +633,15 @@ namespace
 		{
 			WorkflowSelection selection;
 			QuickAccess::WorkflowState current;
-			if (!BuildWorkflow(current, selection, true) || !QuickAccess::CanInvokeWorkflow(shown, current, command) ||
-				selection.documents.empty() || selection.documents.size() > static_cast<std::size_t>(MAXLONG)) return false;
+			if (!BuildWorkflow(current, selection, true)) return false;
+			if (!QuickAccess::CanInvokeWorkflow(shown, current, command) || selection.documents.empty() || selection.documents.size() > static_cast<std::size_t>(MAXLONG))
+			{
+				if (current.visible && !current.status.empty()) MessageBoxW(g_frame, current.status.c_str(), L"Workflow action unavailable", MB_OK | MB_ICONINFORMATION);
+				return false;
+			}
 			if (!FocusSelection(selection.list)) return false;
+			const auto notification = QuickAccess::BeginWorkflowNotification(command);
+			struct Notification { std::uint64_t token; ~Notification() { QuickAccess::EndWorkflowNotification(token); } } notify{notification};
 			// Native document command dispatch preserves extension callbacks, WRE prompts and audit-comment dialogs.
 			const LONG_PTR outcome = aaApi_ExecuteDocumentCommand(command, static_cast<LONG>(selection.documents.size()), selection.documents.data());
 			g_workflowChecked = 0;
@@ -633,21 +659,207 @@ namespace
 			return false;
 		}
 	}
+	bool IsWorkflowCommand(UINT command)
+	{
+		if (command == IDMD_CHANGE_NEXT_STATE || command == IDMD_CHANGE_PREV_STATE || command == IDMD_STATE) return true;
+		if (!IsMenu(g_workflowMenu)) return false;
+		QuickAccess::WorkflowState menu;
+		const QuickAccess::WorkflowMenuIds ids{IDMD_CHANGE_NEXT_STATE, IDMD_CHANGE_PREV_STATE, IDMD_STATE, IDMD_SET_FINAL, IDMD_REMOVE_FINAL};
+		if (!QuickAccess::ReadWorkflowMenu(g_workflowMenu, ids, true, menu)) return false;
+		return std::any_of(menu.actions.begin(), menu.actions.end(), [&](const auto& action) { return action.command == command; });
+	}
 
-	bool BuildAdmin(QuickAccess::ContextState& result)
+	bool BuildAdmin(QuickAccess::ContextState& result, bool* administrative = nullptr)
 	{
 		result = {};
+		if (administrative != nullptr) *administrative = false;
 		const HDSOURCE source = aaApi_GetActiveDatasource();
 		if (source == nullptr) return true;
 		const LONG user = aaApi_GetCurrentUserId();
+		if (user <= 0) return false;
 		const bool administrator = aaApi_IsCurrentUserAdmin() != FALSE;
 		const bool restricted = aaApi_IsUserRestrictedAdmin(0) != FALSE;
 		const bool setup = aaApi_HasAdminSetup() != FALSE;
+		wchar_t datasource[1024]{};
+		if (!aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource))) return false;
+		// The expected change from an ordinary to an administrative connection does not change the identity key.
 		const std::wstring context = std::to_wstring(reinterpret_cast<UINT_PTR>(source)) + L"/" + std::to_wstring(user) +
-			L"/" + std::to_wstring(administrator) + L"/" + std::to_wstring(restricted) + L"/" + std::to_wstring(setup);
-		result = QuickAccess::AdminContext(context, administrator, restricted, setup);
+			L"/" + std::to_wstring(administrator) + L"/" + std::to_wstring(restricted) + L"/" + datasource;
+		result = QuickAccess::AdminContext(context, administrator, restricted);
+		if (administrative != nullptr) *administrative = setup;
 		return source == aaApi_GetActiveDatasource() && user == aaApi_GetCurrentUserId();
 	}
+	bool ReadAdminSession(void*, QuickAccess::AdminSession& result)
+	{
+		return BuildAdmin(result.commands, &result.administrative);
+	}
+	BOOL ReadAdminConnection(HDSOURCE source, LPWSTR* datasource, LPWSTR* username, LPWSTR* token)
+	{
+		__try { return aaApi_GetConnectionInfo5(source, nullptr, nullptr, nullptr, datasource, username, token, nullptr, nullptr); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { Report(L"SDK connection-information export unavailable"); return FALSE; }
+	}
+	LONG_PTR LoginAdmin(HWND parent, ULONG flags, LPWSTR datasource, LONG capacity, LPCWSTR username, LPCWSTR token)
+	{
+		__try { return aaApi_LoginDlgExt(parent, L"Datasource administration", flags, datasource, capacity, username, token, nullptr); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { Report(L"SDK administrative sign-in export unavailable"); return IDABORT; }
+	}
+	QuickAccess::AdminAccess LoginAdminSession(void*, const QuickAccess::ContextState& expected, std::wstring& error)
+	{
+		struct Connection
+		{
+			LPWSTR datasource = nullptr, username = nullptr, token = nullptr;
+			~Connection()
+			{
+				for (LPWSTR value : {datasource, username, token}) if (value != nullptr)
+				{ SecureZeroMemory(value, (std::wcslen(value) + 1) * sizeof(wchar_t)); aaApi_Free(value); }
+			}
+		} connection;
+		const HDSOURCE source = aaApi_GetActiveDatasource();
+		if (source == nullptr || !ReadAdminConnection(source, &connection.datasource, &connection.username, &connection.token) ||
+			connection.datasource == nullptr || !*connection.datasource || connection.username == nullptr || !*connection.username)
+		{ error = L"ProjectWise could not read the current datasource login. Reopen the Admin command after reconnecting."; return QuickAccess::AdminAccess::Failed; }
+		wchar_t datasource[1024]{};
+		const auto length = std::wcslen(connection.datasource);
+		if (length >= ARRAYSIZE(datasource)) { error = L"The current datasource name is too long for administrative sign-in."; return QuickAccess::AdminAccess::Failed; }
+		std::wmemcpy(datasource, connection.datasource, length + 1);
+		QuickAccess::ContextState current;
+		if (!BuildAdmin(current) || !current.visible || current.context != expected.context)
+		{ error = L"The datasource or user changed before administrative sign-in."; return QuickAccess::AdminAccess::Failed; }
+		// Use only the current connection's SDK-issued token. Native automatic-login preferences may belong to another account.
+		ULONG flags = AALOGIN_ADMINISTRATIVE | AALOGIN_REUSE_SESSION | AALOGIN_NO_DS_SELECT | AALOGIN_NO_USER_CHANGE |
+			AALOGIN_NO_AUTOLOGIN | AALOGIN_HIDE_SSO_GROUP | AALOGIN_NO_WORKING_DIR_PRECREATE;
+		if (connection.token != nullptr && *connection.token) flags |= AALOGIN_SILENT;
+		HWND parent = GetLastActivePopup(g_frame);
+		if (!IsWindow(parent)) parent = g_frame;
+		for (int depth = 0; depth < 16; ++depth)
+		{
+			const HWND popup = GetLastActivePopup(parent);
+			if (!IsWindow(popup) || popup == parent) break;
+			parent = popup;
+		}
+		aaApi_RemoveLastError();
+		const LONG_PTR result = LoginAdmin(parent, flags, datasource, ARRAYSIZE(datasource), connection.username, connection.token);
+		if (result == IDCANCEL) return QuickAccess::AdminAccess::Cancelled;
+		if (result != IDOK)
+		{
+			const LONG code = aaApi_GetLastErrorId();
+			error = L"ProjectWise did not grant administrative access to the current datasource" +
+				(code ? L" (error " + std::to_wstring(code) + L")." : std::wstring(L"."));
+			return QuickAccess::AdminAccess::Failed;
+		}
+		g_workflowChecked = 0; g_selectorsChecked = 0;
+		aaApi_UpdateProjectWindows(); aaApi_UpdateDocumentWindows();
+		return QuickAccess::AdminAccess::Ready;
+	}
+	QuickAccess::AdminAccess EnsureCurrentAdmin(const QuickAccess::ContextState& shown, UINT command, QuickAccess::ContextState& ready, std::wstring& error)
+	{
+		return QuickAccess::EnsureAdminSession({nullptr, ReadAdminSession, LoginAdminSession}, shown, command, ready, error);
+	}
+	struct RoleReadContext { HDSOURCE source; LONG user; };
+	bool ReadRoleParents(void* context, QuickAccess::RoleMemberKind kind, LONG member, std::vector<QuickAccess::RoleList>& parents)
+	{
+		parents.clear();
+		const auto& expected = *static_cast<RoleReadContext*>(context);
+		if (expected.source != aaApi_GetActiveDatasource() || expected.user != aaApi_GetCurrentUserId()) return false;
+		static_assert(static_cast<LONG>(QuickAccess::RoleMemberKind::User) == AADMS_MGRTYPE_USER &&
+			static_cast<LONG>(QuickAccess::RoleMemberKind::Group) == AADMS_MGRTYPE_GROUP &&
+			static_cast<LONG>(QuickAccess::RoleMemberKind::UserList) == AADMS_MGRTYPE_USERLIST);
+		// Security roles use global access lists, rather than user-created private address books.
+		OwnedBuffer buffer{aaApi_SelectUserListDataBufferByMembers(AADMSUSRLST_ACCE, 0, static_cast<LONG>(kind), member)};
+		if (buffer.value != nullptr)
+		{
+			const LONG count = aaApi_DmsDataBufferGetCount(buffer.value);
+			if (count < 0 || count > 4096) return false;
+			for (LONG i = 0; i < count; ++i)
+			{
+				const LONG id = aaApi_DmsDataBufferGetNumericProperty(buffer.value, USRLST_PROP_ID, i);
+				const LPCWSTR name = aaApi_DmsDataBufferGetStringProperty(buffer.value, USRLST_PROP_NAME, i);
+				if (id > 0 && name != nullptr) parents.push_back({id, name});
+			}
+		}
+		return expected.source == aaApi_GetActiveDatasource() && expected.user == aaApi_GetCurrentUserId();
+	}
+	bool BuildProjectAdmin(QuickAccess::ContextState& result, LONG& project, bool force = false)
+	{
+		result = {}; project = 0;
+		const HDSOURCE source = aaApi_GetActiveDatasource(); const LONG user = aaApi_GetCurrentUserId();
+		if (source == nullptr || user <= 0) return true;
+		struct Errors
+		{
+			LONG_PTR bookmark = aaApi_AddErrorStackBookmark();
+			~Errors() { if (bookmark >= 0) aaApi_RemoveErrorStackBookmark(bookmark); }
+		} errors;
+		if (errors.bookmark < 0) return false;
+		wchar_t datasource[1024]{};
+		if (!aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource))) return false;
+		const std::wstring identity = std::to_wstring(reinterpret_cast<UINT_PTR>(source)) + L"/" + std::to_wstring(user) + L"/" + datasource;
+		static std::wstring cachedIdentity;
+		static QuickAccess::RoleList cachedRole;
+		static ULONGLONG checked = 0;
+		const auto now = GetTickCount64();
+		if (force || cachedIdentity != identity || now - checked >= 30000)
+		{
+			cachedRole = {}; cachedIdentity.clear();
+			std::vector<LONG> groups;
+			OwnedBuffer memberships{aaApi_SelectGroupDataBufferByUser(user)};
+			if (memberships.value != nullptr)
+			{
+				const LONG count = aaApi_DmsDataBufferGetCount(memberships.value);
+				if (count < 0 || count > 256) return false;
+				for (LONG i = 0; i < count; ++i) groups.push_back(aaApi_DmsDataBufferGetNumericProperty(memberships.value, GROUP_PROP_ID, i));
+			}
+			RoleReadContext context{source, user};
+			const auto role = QuickAccess::FindProjectAdminRole(user, groups, &context, ReadRoleParents);
+			if (source != aaApi_GetActiveDatasource() || user != aaApi_GetCurrentUserId()) return false;
+			cachedRole = role; cachedIdentity = identity; checked = now;
+		}
+		if (cachedRole.id <= 0) return true;
+		const HWND list = NavigationList();
+		const LONG folder = ExplorerControl(list) ? aaApi_DocListGetProject(list) : 0;
+		static std::wstring projectKey, projectName;
+		static LONG projectId = 0;
+		static ULONGLONG projectChecked = 0;
+		const auto key = identity + L"/" + std::to_wstring(folder);
+		if (force || projectKey != key || now - projectChecked >= 5000)
+		{
+			projectId = 0; projectName.clear();
+			if (folder > 0)
+			{
+				OwnedBuffer workArea{aaApi_SelectRichProjectOfFolder(folder)};
+				if (workArea.value && aaApi_DmsDataBufferGetCount(workArea.value) == 1)
+				{
+					projectId = aaApi_DmsDataBufferGetNumericProperty(workArea.value, PROJ_PROP_ID, 0);
+					const LPCWSTR name = aaApi_DmsDataBufferGetStringProperty(workArea.value, PROJ_PROP_NAME, 0);
+					if (projectId > 0 && name != nullptr && *name) projectName = name;
+					else projectId = 0;
+				}
+			}
+			projectKey = key; projectChecked = now;
+		}
+		const bool canCreate = aaApi_IsCurrentUserAdmin() || aaApi_IsUserRestrictedAdmin(0);
+		project = projectId;
+		result = QuickAccess::ProjectAdminContext(identity + L"/" + std::to_wstring(project) + L"/" + std::to_wstring(canCreate),
+			cachedRole.name, canCreate, project > 0, projectName);
+		return source == aaApi_GetActiveDatasource() && user == aaApi_GetCurrentUserId() && list == NavigationList() &&
+			(!ExplorerControl(list) || folder == aaApi_DocListGetProject(list));
+	}
+	bool RefreshProjectAdminImpl(QuickAccess::ContextState& result)
+	{
+		try { LONG project = 0; return BuildProjectAdmin(result, project); }
+		catch (...) { Report(L"could not read project administration context"); return false; }
+	}
+	bool RefreshProjectAdmin(void*, QuickAccess::ContextState& result)
+	{
+		__try { return IsWindowEnabled(g_frame) && RefreshProjectAdminImpl(result); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+	}
+	struct UserCreationScope
+	{
+		const QuickAccess::ContextState* project = nullptr;
+		void* context = nullptr;
+		bool (*validate)(void*, std::wstring&) = nullptr;
+		LONG* created = nullptr;
+	};
 	bool RefreshAdminImpl(QuickAccess::ContextState& result)
 	{
 		try { return BuildAdmin(result); }
@@ -658,55 +870,67 @@ namespace
 		__try { return IsWindowEnabled(g_frame) && RefreshAdminImpl(result); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
 	}
-	bool CreateUserImpl(const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	bool CreateUserImpl(const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error, const UserCreationScope* scope)
 	{
 		try
 		{
 			QuickAccess::ContextState current;
 			if (!QuickAccess::ValidateNewUser(user, error)) return false;
-			if (!BuildAdmin(current) || !QuickAccess::CanInvokeWorkflow(shown, current, static_cast<UINT>(QuickAccess::AdminCommand::NewUser)) || !aaApi_HasAdminSetup())
-			{ error = L"The datasource or administrative session changed. Reopen New User."; return false; }
+			if (EnsureCurrentAdmin(shown, static_cast<UINT>(QuickAccess::AdminCommand::NewUser), current, error) != QuickAccess::AdminAccess::Ready) return false;
+			if (scope != nullptr && scope->project != nullptr)
+			{
+				QuickAccess::ContextState projectContext; LONG project = 0;
+				if (!BuildProjectAdmin(projectContext, project, true) || !QuickAccess::CanInvokeWorkflow(*scope->project, projectContext, static_cast<UINT>(QuickAccess::ProjectAdminCommand::NewUser)))
+				{ error = L"The project or Project Admin membership changed. Reopen New User."; return false; }
+			}
+			if (scope != nullptr && scope->validate != nullptr && !scope->validate(scope->context, error)) return false;
 			LONG id = 0;
 			// The server remains authoritative for Restricted Administrator Users-node permissions and uniqueness.
-			if (!aaApi_CreateUser3(&id, user.name.c_str(), user.description.c_str(), user.email.c_str()))
+			// The public single-identity compatibility call also sets the chosen type and credentials.
+			// CreateUser3 alone creates only the account record; the newer identity-management exports are not public SDK declarations.
+			static_assert(QuickAccess::kMaxLogicalPasswordLength == AAAPI_MAX_CLEARTEXT_PASSWORD_LEN);
+			const bool federated = user.type == QuickAccess::AccountType::Federated;
+			aaApi_RemoveLastError();
+			if (!aaApi_CreateUser2(&id, federated ? AADMS_STSUSER : AADMS_DMSUSER, nullptr, user.name.c_str(),
+				federated ? nullptr : user.password.c_str(), user.description.empty() ? nullptr : user.description.c_str(),
+				user.email.empty() ? nullptr : user.email.c_str(), federated ? user.email.c_str() : nullptr))
 			{
-				wchar_t text[180]{};
-				swprintf_s(text, L"ProjectWise rejected user creation (error %ld). Check Users-node permissions and the account name.", aaApi_GetLastErrorId());
-				error = text; return false;
+				const LONG code = aaApi_GetLastErrorId();
+				const LPCWSTR nativeMessage = aaApi_GetLastErrorMessage();
+				const std::wstring message = nativeMessage ? nativeMessage : L"";
+				const LPCWSTR nativeDetail = aaApi_GetLastErrorDetail();
+				error = QuickAccess::UserCreationError(code, message, nativeDetail ? nativeDetail : L""); return false;
 			}
+			if (scope != nullptr && scope->created != nullptr) *scope->created = id;
 			return true;
 		}
 		catch (...) { error = L"The account could not be created."; return false; }
 	}
-	bool CreateUser(void*, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	bool CreateUser(void* scope, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
 	{
-		__try { return CreateUserImpl(shown, user, error); }
-		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+		__try { return CreateUserImpl(shown, user, error, static_cast<const UserCreationScope*>(scope)); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { error = L"The SDK user-creation dependency is unavailable in this Explorer installation."; return false; }
 	}
 	bool ExecuteAdminImpl(const QuickAccess::ContextState& shown, UINT command)
 	{
 		try
 		{
 			QuickAccess::ContextState current;
-			if (!BuildAdmin(current) || !QuickAccess::CanInvokeWorkflow(shown, current, command)) return false;
+			std::wstring error;
+			const auto access = EnsureCurrentAdmin(shown, command, current, error);
+			if (access == QuickAccess::AdminAccess::Cancelled) return true;
+			if (access != QuickAccess::AdminAccess::Ready)
+			{ MessageBoxW(g_frame, error.c_str(), L"Datasource administration", MB_OK | MB_ICONINFORMATION); return false; }
 			wchar_t datasource[1024]{};
 			if (!aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource))) return false;
 			if (command == static_cast<UINT>(QuickAccess::AdminCommand::NewUser))
 			{
-				const INT_PTR result = QuickAccess::ShowNewUserDialog(g_frame, g_instance, shown, datasource, nullptr, CreateUser);
+				const INT_PTR result = QuickAccess::ShowNewUserDialog(g_frame, g_instance, current, datasource, nullptr, CreateUser);
 				return result == IDOK || result == IDCANCEL;
 			}
 			if (command == static_cast<UINT>(QuickAccess::AdminCommand::Users))
 			{
 				const INT_PTR result = aaApi_UserManagementDlg(g_frame, nullptr);
-				return result == IDOK || result == IDCANCEL;
-			}
-			if (command == static_cast<UINT>(QuickAccess::AdminCommand::SignIn))
-			{
-				// An explicit native login prompts for credentials. Never silently promote a normal Explorer session.
-				const LONG_PTR result = aaApi_LoginDlgExt(g_frame, L"Administrative sign-in", AALOGIN_ADMINISTRATIVE | AALOGIN_REUSE_SESSION |
-					AALOGIN_NO_DS_SELECT | AALOGIN_NO_AUTOLOGIN, datasource, ARRAYSIZE(datasource), nullptr, nullptr, nullptr);
-				if (result == IDOK) { g_workflowChecked = 0; g_selectorsChecked = 0; aaApi_UpdateProjectWindows(); aaApi_UpdateDocumentWindows(); }
 				return result == IDOK || result == IDCANCEL;
 			}
 			return false;
@@ -718,11 +942,133 @@ namespace
 		__try { return IsWindowEnabled(g_frame) && ExecuteAdminImpl(shown, command); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
 	}
+	struct ManagerContext { HDSOURCE source; LONG actor; std::wstring datasource; };
+	bool ManagerIdentity(const ManagerContext& expected)
+	{
+		wchar_t datasource[1024]{};
+		return IsWindow(g_frame) && expected.source == aaApi_GetActiveDatasource() && expected.actor == aaApi_GetCurrentUserId() &&
+			aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource)) && expected.datasource == datasource;
+	}
+	bool ManagerEligible(void* context, bool fresh, std::wstring& error)
+	{
+		const auto& expected = *static_cast<ManagerContext*>(context);
+		if (!ManagerIdentity(expected))
+		{ error = L"Activate the original datasource and user, then Refresh."; return false; }
+		QuickAccess::ContextState current; LONG project = 0;
+		if (!BuildProjectAdmin(current, project, fresh) || !current.visible)
+		{ error = L"Project Admin userlist membership is no longer available."; return false; }
+		return true;
+	}
+	bool ManagerPrepare(void* context, std::wstring& error)
+	{
+		if (!ManagerEligible(context, true, error)) return false;
+		QuickAccess::ContextState shown, ready;
+		if (!BuildAdmin(shown)) { error = L"The current administrative context is unavailable."; return false; }
+		if (shown.visible && EnsureCurrentAdmin(shown, static_cast<UINT>(QuickAccess::AdminCommand::Users), ready, error) != QuickAccess::AdminAccess::Ready) return false;
+		return ManagerEligible(context, true, error);
+	}
+	bool ManagerCanCreate(void* context)
+	{
+		const auto& expected = *static_cast<ManagerContext*>(context);
+		QuickAccess::ContextState current;
+		return ManagerIdentity(expected) && BuildAdmin(current) && current.visible;
+	}
+	bool ManagerCreationAllowed(void* context, std::wstring& error) { return ManagerEligible(context, true, error); }
+	struct ManagerCreation
+	{
+		UserCreationScope scope;
+		LONG id = 0;
+		QuickAccess::UserManagement::User* result = nullptr;
+	};
+	bool CreateManagerUserImpl(void* context, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	{
+		auto& creation = *static_cast<ManagerCreation*>(context);
+		if (!CreateUserImpl(shown, user, error, &creation.scope)) return false;
+		*creation.result = {creation.id, user.name, user.description, user.email}; return true;
+	}
+	bool CreateManagerUser(void* context, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	{
+		__try { return CreateManagerUserImpl(context, shown, user, error); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { error = L"The SDK user-creation dependency is unavailable."; return false; }
+	}
+	bool ManagerCreate(void* context, HWND parent, QuickAccess::UserManagement::User& result, std::wstring& error)
+	{
+		if (!ManagerEligible(context, true, error)) return false;
+		QuickAccess::ContextState shown, ready;
+		if (!BuildAdmin(shown) || !shown.visible) { error = L"Creating datasource accounts requires datasource administrative rights."; return false; }
+		if (EnsureCurrentAdmin(shown, static_cast<UINT>(QuickAccess::AdminCommand::NewUser), ready, error) != QuickAccess::AdminAccess::Ready) return false;
+		wchar_t datasource[1024]{}; if (!aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource))) return false;
+		ManagerCreation creation; creation.result = &result; creation.scope = {nullptr, context, ManagerCreationAllowed, &creation.id};
+		const INT_PTR outcome = QuickAccess::ShowNewUserDialog(parent, g_instance, ready, datasource, &creation, CreateManagerUser);
+		if (outcome != IDOK) { error = L"Account creation was cancelled. Pending membership changes are retained."; return false; }
+		if (result.id <= 0) { error = L"The account was created but its identifier was not returned. Refresh users before trying again."; return false; }
+		return true;
+	}
+	void DestroyManagerContext(void* context) { delete static_cast<ManagerContext*>(context); }
+	bool ExecuteProjectAdminImpl(const QuickAccess::ContextState& shown, UINT command)
+	{
+		try
+		{
+			QuickAccess::ContextState current; LONG project = 0;
+			if (!BuildProjectAdmin(current, project, true) || !QuickAccess::CanInvokeWorkflow(shown, current, command)) return false;
+			QuickAccess::ContextState datasource, ready;
+			if (!BuildAdmin(datasource)) return false;
+			if (datasource.visible)
+			{
+				std::wstring error;
+				const auto access = EnsureCurrentAdmin(datasource, static_cast<UINT>(command == static_cast<UINT>(QuickAccess::ProjectAdminCommand::NewUser) ?
+					QuickAccess::AdminCommand::NewUser : QuickAccess::AdminCommand::Users), ready, error);
+				if (access == QuickAccess::AdminAccess::Cancelled) return true;
+				if (access != QuickAccess::AdminAccess::Ready)
+				{ MessageBoxW(g_frame, error.c_str(), L"Project administration", MB_OK | MB_ICONINFORMATION); return false; }
+				if (!BuildProjectAdmin(current, project, true) || !QuickAccess::CanInvokeWorkflow(shown, current, command)) return false;
+			}
+			LONG_PTR result = IDABORT;
+			switch (static_cast<QuickAccess::ProjectAdminCommand>(command))
+			{
+			case QuickAccess::ProjectAdminCommand::NewUser:
+				{
+					if (!ready.visible) return false;
+					wchar_t name[1024]{}; if (!aaApi_GetActiveDatasourceName(name, ARRAYSIZE(name))) return false;
+					UserCreationScope scope{&current};
+					result = QuickAccess::ShowNewUserDialog(g_frame, g_instance, ready, name, &scope, CreateUser); break;
+				}
+			case QuickAccess::ProjectAdminCommand::Members:
+				{
+					wchar_t datasourceName[1024]{};
+					if (!aaApi_GetActiveDatasourceName(datasourceName, ARRAYSIZE(datasourceName))) return false;
+					auto* context = new (std::nothrow) ManagerContext{aaApi_GetActiveDatasource(), aaApi_GetCurrentUserId(), datasourceName};
+					if (context != nullptr)
+					{
+						const QuickAccess::UserManagerServices services{context, ManagerEligible, ManagerPrepare, ManagerCanCreate, ManagerCreate, DestroyManagerContext};
+						if (QuickAccess::OpenProjectUserManager(g_frame, g_instance, project, services) != nullptr) return true;
+					}
+					// Preserve access to the standard tool if the optional floating window cannot be created.
+					result = aaApi_UserManagementDlg(g_frame, nullptr); break;
+				}
+			case QuickAccess::ProjectAdminCommand::Properties:
+				if (project <= 0) return false;
+				result = aaApi_ProjectPropertyDlg2(g_frame, nullptr, 0, project); break;
+			case QuickAccess::ProjectAdminCommand::Access:
+				if (project <= 0) return false;
+				result = aaApi_ProjectAccessDlg(g_frame, nullptr, project); break;
+			default: return false;
+			}
+			return result == IDOK || result == IDCANCEL;
+		}
+		catch (...) { Report(L"project administration action failed"); return false; }
+	}
+	bool ExecuteProjectAdmin(void*, const QuickAccess::ContextState& shown, UINT command)
+	{
+		__try { return IsWindowEnabled(g_frame) && ExecuteProjectAdminImpl(shown, command); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+	}
 
 	bool RecoverClassic(const wchar_t* reason, bool interactive = false)
 	{
 		g_classicPreferred = true; g_ribbonExpected = false;
 		QuickAccess::SetVersionStacksAvailable(false);
+		QuickAccess::SetWorkflowNotificationsAvailable(false);
 		if (!QuickAccess::SaveClassicUiPreference(true)) Report(L"could not persist Classic UI preference");
 		if (g_startupTimer != 0) { KillTimer(nullptr, g_startupTimer); g_startupTimer = 0; }
 		if (IsWindow(g_window)) { QuickAccess::Dock(g_window, false); DestroyWindow(g_window); }
@@ -759,7 +1105,8 @@ namespace
 				const HWND target = SelectionControl(aaApi_GetMainDscTree(), NavigationList());
 				if (target == nullptr) { Report(L"no Explorer selection control is available for keyboard focus"); return false; }
 				return FocusSelection(target);
-			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow, RefreshSelectors, SelectChoice, RefreshAdmin, ExecuteAdmin, RestoreClassic, RibbonFailed});
+			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow, RefreshSelectors, SelectChoice, RefreshAdmin, ExecuteAdmin, RestoreClassic, RibbonFailed,
+			RefreshProjectAdmin, ExecuteProjectAdmin});
 		g_creationFailed = g_window == nullptr;
 		if (g_window != nullptr && !QuickAccess::Dock(g_window, true))
 		{
@@ -768,6 +1115,7 @@ namespace
 		}
 		g_ribbonExpected = g_window != nullptr;
 		if (g_ribbonExpected) QuickAccess::SetVersionStacksAvailable(true);
+		if (g_ribbonExpected) QuickAccess::SetWorkflowNotificationsAvailable(true);
 		return g_window != nullptr;
 	}
 
@@ -891,6 +1239,9 @@ namespace
 			!AddVisibilityCommand(AAMENU_VIEW, L"Ribbon", g_viewCommand)) { RecoverClassic(L"ribbon menu registration failed"); return false; }
 		if (!QuickAccess::RegisterVersionStacks(g_instance, !g_classicPreferred))
 			Report(L"optional Version stacks view unavailable; native document list retained");
+		if (!QuickAccess::StartWorkflowNotifications(g_instance, IsWorkflowCommand))
+			Report(L"workflow notification observer unavailable; native workflow operations retained");
+		QuickAccess::SetWorkflowNotificationsAvailable(!g_classicPreferred);
 		g_healthTimer = SetTimer(nullptr, 0, 1000, CheckRibbon);
 		if (g_healthTimer == 0) { RecoverClassic(L"ribbon health monitoring unavailable"); return false; }
 		g_startupTimer = SetTimer(nullptr, 0, 250, Startup);

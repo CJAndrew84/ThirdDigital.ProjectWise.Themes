@@ -13,7 +13,9 @@
 #include <vector>
 #include <algorithm>
 
+void CheckUserManager(HWND owner, const wchar_t* preview, void (*expect)(bool, const wchar_t*), bool (*save)(HWND, const wchar_t*));
 void CheckVersionStacks(const wchar_t* preview, void (*expect)(bool, const wchar_t*), bool (*save)(HWND, const wchar_t*));
+void CheckNotifications(HWND owner, const wchar_t* preview, void (*expect)(bool, const wchar_t*), bool (*save)(HWND, const wchar_t*));
 
 namespace
 {
@@ -66,6 +68,10 @@ namespace
 		bool adminAvailable = true;
 		unsigned adminExecutions = 0, recoveries = 0, classicSelections = 0;
 		UINT lastAdmin = 0;
+		QuickAccess::ContextState projectAdmin;
+		unsigned projectAdminExecutions = 0;
+		UINT lastProjectAdmin = 0;
+		HWND destroyOnProjectAdminRefresh = nullptr;
 		HWND recoveryWindow = nullptr, destroyOnAdminRefresh = nullptr;
 		bool throwOnRefresh = false, throwOnExecute = false, throwOnCreateAddress = false;
 
@@ -233,6 +239,19 @@ namespace
 			if (!QuickAccess::CanInvokeWorkflow(shown, host.admin, command)) return false;
 			++host.adminExecutions; host.lastAdmin = command; return true;
 		}
+		static bool RefreshProjectAdmin(void* context, QuickAccess::ContextState& result)
+		{
+			auto& host = *static_cast<FakeHost*>(context); result = host.projectAdmin;
+			if (host.destroyOnProjectAdminRefresh != nullptr)
+			{ HWND window = host.destroyOnProjectAdminRefresh; host.destroyOnProjectAdminRefresh = nullptr; DestroyWindow(window); }
+			return true;
+		}
+		static bool ExecuteProjectAdmin(void* context, const QuickAccess::ContextState& shown, UINT command)
+		{
+			auto& host = *static_cast<FakeHost*>(context);
+			if (!QuickAccess::CanInvokeWorkflow(shown, host.projectAdmin, command)) return false;
+			++host.projectAdminExecutions; host.lastProjectAdmin = command; return true;
+		}
 		static bool RestoreClassic(void* context)
 		{
 			auto& host = *static_cast<FakeHost*>(context); ++host.classicSelections; DestroyWindow(host.recoveryWindow); return true;
@@ -293,6 +312,14 @@ namespace
 		Expect(!QuickAccess::ReadWorkflowMenu(root, ids, true, result) && result.actions.empty(), L"ambiguous duplicate workflow IDs fail closed");
 		DestroyMenu(root);
 		Expect(!QuickAccess::ReadWorkflowMenu(nullptr, ids, true, result) && result.actions.empty(), L"missing workflow menus do not fabricate operations");
+		root = CreatePopupMenu(); state = CreatePopupMenu();
+		AppendMenuW(state, MF_STRING, 801, L"Server-side WRE approval");
+		MENUITEMINFOW parent{sizeof(parent)}; parent.fMask = MIIM_ID | MIIM_SUBMENU | MIIM_STRING;
+		parent.wID = ids.change; parent.hSubMenu = state; parent.dwTypeData = const_cast<LPWSTR>(L"Native change-state branch");
+		InsertMenuItemW(root, 0, TRUE, &parent);
+		Expect(QuickAccess::ReadWorkflowMenu(root, ids, true, result) && result.rulesEngine && result.actions.size() == 1 && result.actions[0].command == 801,
+			L"WRE-only menus remain discoverable when every standard transition leaf is replaced");
+		DestroyMenu(root);
 	}
 
 	void CheckNavigationAvailability()
@@ -695,15 +722,112 @@ namespace
 		DestroyWindow(content);
 	}
 
+	struct AdminSessionFixture
+	{
+		QuickAccess::AdminSession session, after;
+		QuickAccess::AdminAccess outcome = QuickAccess::AdminAccess::Ready;
+		bool available = true, replaceOnLogin = false, failAfterLogin = false, replaceOnSecondRead = false, throwLogin = false, throwRead = false;
+		unsigned reads = 0, logins = 0;
+		static bool Read(void* context, QuickAccess::AdminSession& result)
+		{
+			auto& fixture = *static_cast<AdminSessionFixture*>(context); ++fixture.reads;
+			if (fixture.throwRead) throw 1;
+			if (!fixture.available || (fixture.failAfterLogin && fixture.logins != 0)) return false;
+			if (fixture.replaceOnSecondRead && fixture.reads == 2) fixture.session = fixture.after;
+			result = fixture.session; return true;
+		}
+		static QuickAccess::AdminAccess Login(void* context, const QuickAccess::ContextState& expected, std::wstring& error)
+		{
+			auto& fixture = *static_cast<AdminSessionFixture*>(context); ++fixture.logins;
+			Expect(expected.context == fixture.session.commands.context, L"automatic administrative login receives the validated current identity");
+			if (fixture.throwLogin) throw 1;
+			if (fixture.outcome == QuickAccess::AdminAccess::Failed) error = L"Denied by server.";
+			if (fixture.outcome != QuickAccess::AdminAccess::Ready) return fixture.outcome;
+			if (fixture.replaceOnLogin) fixture.session = fixture.after;
+			else fixture.session.administrative = true;
+			return fixture.outcome;
+		}
+		QuickAccess::AdminSessionHost Host() { return {this, Read, Login}; }
+	};
+	void CheckAdminSession()
+	{
+		using namespace QuickAccess;
+		const auto shown = AdminContext(L"current datasource/current user/admin role", true, false);
+		ContextState ready; std::wstring error;
+		for (const auto command : {AdminCommand::NewUser, AdminCommand::Users})
+		{
+			AdminSessionFixture fixture; fixture.session.commands = shown;
+			Expect(EnsureAdminSession(fixture.Host(), shown, static_cast<UINT>(command), ready, error) == AdminAccess::Ready &&
+				fixture.logins == 1 && fixture.reads == 2 && ready.context == shown.context && error.empty(),
+				L"each Admin command establishes and verifies administrative access as part of the action");
+			Expect(EnsureAdminSession(fixture.Host(), shown, static_cast<UINT>(command), ready, error) == AdminAccess::Ready && fixture.logins == 1,
+				L"an existing administrative connection is reused without another login");
+		}
+		AdminSessionFixture fixture; fixture.session.commands = shown;
+		const auto restricted = AdminContext(L"current datasource/restricted administrator", false, true);
+		fixture.session.commands = restricted;
+		Expect(EnsureAdminSession(fixture.Host(), restricted, 2, ready, error) == AdminAccess::Ready && fixture.logins == 1 && ready.context == restricted.context,
+			L"Restricted Administrators use the same automatic session flow without changing identity or role");
+		fixture = {}; fixture.session.commands = shown;
+		fixture.outcome = AdminAccess::Cancelled;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Cancelled && fixture.logins == 1 && !ready.visible && !error.empty(),
+			L"cancelled authentication stops the action without a retry or actionable context");
+		fixture.outcome = AdminAccess::Ready;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Ready && fixture.logins == 2,
+			L"a later explicit action can retry authentication after cancellation");
+		fixture = {}; fixture.session.commands = shown; fixture.outcome = AdminAccess::Failed;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 3, ready, error) == AdminAccess::Failed && fixture.logins == 1 && !ready.visible && error == L"Denied by server.",
+			L"denied authentication retains the error and never releases an administrative command");
+		for (const auto* changed : {L"different datasource/current user/admin role", L"current datasource/different user/admin role", L"current datasource/current user/restricted role"})
+		{
+			fixture = {}; fixture.session.commands = shown; fixture.replaceOnLogin = true;
+			fixture.after = {AdminContext(changed, true, false), true};
+			Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && fixture.logins == 1 && !ready.visible,
+				L"datasource, user or role changes during login stop the original administrative action");
+		}
+		fixture = {}; fixture.session.commands = shown; fixture.replaceOnLogin = true; fixture.after = {shown, false};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"a nominal login success still requires the SDK to confirm administrative setup");
+		fixture.after = {{}, true}; fixture.session = {shown, false};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"losing administrative membership during login prevents command execution");
+		fixture.after = {shown, true}; fixture.after.commands.actions[0].enabled = false; fixture.session = {shown, false};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"a revoked command after successful login remains unavailable");
+		fixture = {}; fixture.session.commands = shown; fixture.failAfterLogin = true;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"post-login read failure cannot reuse a stale administrative context");
+		fixture = {}; fixture.session = {shown, true}; fixture.replaceOnSecondRead = true;
+		fixture.after = {AdminContext(L"another datasource/user", true, false), true};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && fixture.logins == 0 && !ready.visible,
+			L"an already administrative session is revalidated before allowing the action");
+		fixture = {}; fixture.session.commands = AdminContext(L"already changed datasource", true, false);
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && fixture.logins == 0,
+			L"a stale command cannot initiate administrative authentication on a different datasource");
+		fixture = {};
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && fixture.logins == 0,
+			L"users without an administrative role cannot initiate the automatic sign-in");
+		fixture.session.commands = shown;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 1, ready, error) == AdminAccess::Failed && fixture.logins == 0,
+			L"the removed sign-in command cannot be invoked through its old numeric ID");
+		fixture.throwLogin = true;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible && !error.empty(),
+			L"authentication exceptions are contained and never allow an administrative action");
+		fixture.throwLogin = false; fixture.throwRead = true;
+		Expect(EnsureAdminSession(fixture.Host(), shown, 2, ready, error) == AdminAccess::Failed && !ready.visible,
+			L"session query exceptions do not retain an earlier ready context");
+	}
+
 	void CheckAdminAndRecovery(HWND owner, const wchar_t* previewPath)
 	{
 		using namespace QuickAccess;
-		Expect(!AdminContext(L"ds/user", false, false, true).visible, L"an administrative session alone does not bypass Admin-group visibility");
-		Expect(!AdminContext(L"", true, false, true).visible, L"no datasource context means no Admin tab");
-		const auto member = AdminContext(L"ds/user/member", true, false, false);
-		const auto restricted = AdminContext(L"ds/user/restricted", false, true, false);
-		Expect(member.visible && restricted.visible && !member.actions[0].enabled && member.actions[2].enabled, L"Administrator and Restricted Administrator members see Admin but need an administrative sign-in to create users");
-		Expect(AdminContext(L"ds/user/admin", false, true, true).actions[0].enabled, L"a restricted administrative session can request user creation through server authorization");
+		CheckAdminSession();
+		Expect(!AdminContext(L"ds/user", false, false).visible, L"an administrative session alone does not bypass Admin-group visibility");
+		Expect(!AdminContext(L"", true, false).visible, L"no datasource context means no Admin tab");
+		const auto member = AdminContext(L"ds/user/member", true, false);
+		const auto restricted = AdminContext(L"ds/user/restricted", false, true);
+		Expect(member.visible && restricted.visible && member.actions.size() == 2 && restricted.actions.size() == 2 &&
+			member.actions[0].enabled && restricted.actions[0].enabled, L"Admin members can open New User directly with no separate sign-in action");
 		FakeHost host; host.admin = member;
 		Host callbacks{&host, FakeHost::Refresh, FakeHost::Execute};
 		callbacks.refreshWorkflow = FakeHost::RefreshWorkflow; callbacks.executeWorkflow = FakeHost::ExecuteWorkflow;
@@ -718,11 +842,12 @@ namespace
 		SetFocus(tabs); QueuedKey(tabs, VK_END);
 		Expect(SelectedTab(window) == Tab::Admin && TabCtrl_GetCurSel(tabs) == 4, L"tab keyboard routing uses contextual identity rather than fixed native indices");
 		QueuedKey(tabs, VK_DOWN);
-		Expect(GetDlgCtrlID(GetFocus()) == kFirstAdmin + 1, L"Admin keyboard entry skips unavailable New User");
-		Expect(QueuedKey(GetFocus(), VK_RETURN) && host.lastAdmin == static_cast<UINT>(AdminCommand::Users), L"Enter activates the matching permitted administrative action");
+		Expect(GetDlgCtrlID(GetFocus()) == kFirstAdmin && GetDlgItem(CommandPage(window), kFirstAdmin + 2) == nullptr,
+			L"Admin keyboard entry reaches New User and no separate login control exists");
+		Expect(QueuedKey(GetFocus(), VK_RETURN) && host.lastAdmin == static_cast<UINT>(AdminCommand::NewUser), L"Enter opens New User directly for an authorized member");
 		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
-		Expect(!InvokeAdmin(window, kFirstAdmin), L"normal Explorer sessions cannot create users just from group membership");
-		host.admin = AdminContext(L"ds/user/admin", true, false, true); Refresh(window);
+		Expect(InvokeAdmin(window, kFirstAdmin + 1) && host.lastAdmin == static_cast<UINT>(AdminCommand::Users), L"Users and Groups is available as a direct administrative action");
+		host.admin = AdminContext(L"ds/user/admin", true, false); Refresh(window);
 		Expect(InvokeAdmin(window, kFirstAdmin) && host.lastAdmin == static_cast<UINT>(AdminCommand::NewUser), L"New User dispatches only after current administrative context is revalidated");
 		if (previewPath != nullptr) Expect(SaveRibbonPreview(window, previewPath), L"native contextual Admin preview written");
 		host.workflow = {true, false, L"ds/folder/doc", {{501, L"Next", true, WorkflowActionKind::Next}}}; Refresh(window);
@@ -775,48 +900,247 @@ namespace
 		Expect(Create(owner, GetModuleHandleW(nullptr), callbacks) == nullptr && IsWindowEnabled(owner), L"a throwing creation callback leaves the host UI usable");
 	}
 
-	struct DialogFixture { HWND owner = nullptr; unsigned calls = 0, ticks = 0; bool cancel = false; };
+	struct RoleFixture
+	{
+		struct Edge { QuickAccess::RoleMemberKind kind; LONG id; std::vector<QuickAccess::RoleList> parents; };
+		std::vector<Edge> edges;
+		unsigned calls = 0;
+		bool fail = false, chain = false, oversized = false;
+		static bool Read(void* context, QuickAccess::RoleMemberKind kind, LONG id, std::vector<QuickAccess::RoleList>& result)
+		{
+			auto& fixture = *static_cast<RoleFixture*>(context); ++fixture.calls;
+			if (fixture.fail) return false;
+			if (fixture.chain) { result = {{id + 1, L"Ordinary team"}}; return true; }
+			if (fixture.oversized) { result.resize(4097); return true; }
+			const auto found = std::find_if(fixture.edges.begin(), fixture.edges.end(), [&](const auto& edge) { return edge.kind == kind && edge.id == id; });
+			result = found == fixture.edges.end() ? std::vector<QuickAccess::RoleList>{} : found->parents; return true;
+		}
+	};
+	void CheckProjectAdmin(HWND owner, const wchar_t* preview)
+	{
+		using namespace QuickAccess;
+		for (const auto* name : {L"*BA", L"*ba", L"12345-Project Administrator", L"Different.Project-Project Administrator", L"ANY-project administrator"})
+			Expect(IsProjectAdminList(name), L"project role names match the literal BA list or wildcard project-prefix suffix");
+		for (const auto* name : {L"BA", L"ABCBA", L"ABC*BA", L"*BA-extra", L"12345-Project Administrator-extra", L"12345Project Administrator", L"12345-Project Administrator ", L"*BA\n"})
+			Expect(!IsProjectAdminList(name), L"nearby names and trailing text cannot qualify as a project administration userlist");
+		RoleFixture roles;
+		roles.edges = {{RoleMemberKind::User, 10, {{20, L"*BA"}}}};
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 20, L"direct user membership qualifies for Project Admin");
+		Expect(FindProjectAdminRole(11, {}, &roles, RoleFixture::Read).id == 0, L"another user's membership does not qualify the current user");
+		roles.edges = {{RoleMemberKind::Group, 7, {{30, L"A-Project Administrator"}}}};
+		Expect(FindProjectAdminRole(10, {7}, &roles, RoleFixture::Read).id == 30, L"membership through a user group qualifies for Project Admin");
+		roles.edges = {{RoleMemberKind::User, 10, {{21, L"Team"}}}, {RoleMemberKind::UserList, 21, {{22, L"Nested team"}}},
+			{RoleMemberKind::UserList, 22, {{21, L"Team"}, {30, L"B-Project Administrator"}}}};
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 30, L"nested userlists are resolved and cycles do not hide a valid role path");
+		roles.fail = true;
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 0, L"unreadable membership cannot grant Project Admin");
+		roles = {}; roles.chain = true;
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 0 && roles.calls == 256, L"unbounded membership chains stop at the query limit");
+		roles = {}; roles.oversized = true;
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 0, L"oversized membership results fail without granting a role");
+		Expect(!ProjectAdminContext(L"ds/user", L"ordinary list", true, true, L"Project").visible,
+			L"datasource administrative status alone does not qualify for Project Admin");
+		const auto member = ProjectAdminContext(L"ds/user/project-one", L"*BA", false, true, L"Test work area");
+		Expect(member.visible && !member.actions[0].enabled && member.actions[1].enabled && member.actions[2].enabled,
+			L"project membership enables owned-list and project tools while datasource user creation requires its own rights");
+		const auto noProject = ProjectAdminContext(L"ds/user/no-project", L"A-Project Administrator", false, false, L"");
+		Expect(noProject.visible && !noProject.actions[2].enabled && !noProject.actions[3].enabled && !noProject.status.empty(),
+			L"eligible users retain the tab outside a work area with project-specific tools disabled");
+		FakeHost host; host.projectAdmin = member;
+		Host callbacks{&host, FakeHost::Refresh, FakeHost::Execute};
+		callbacks.refreshProjectAdmin = FakeHost::RefreshProjectAdmin; callbacks.executeProjectAdmin = FakeHost::ExecuteProjectAdmin;
+		callbacks.refreshAdmin = FakeHost::RefreshAdmin; callbacks.executeAdmin = FakeHost::ExecuteAdmin;
+		callbacks.refreshWorkflow = FakeHost::RefreshWorkflow; callbacks.executeWorkflow = FakeHost::ExecuteWorkflow;
+		HWND window = Create(owner, GetModuleHandleW(nullptr), callbacks);
+		Expect(window != nullptr && IsHealthy(window), L"Project Admin uses the shared healthy contextual ribbon");
+		if (window == nullptr) return;
+		ShowWindow(window, SW_SHOWNOACTIVATE);
+		HWND tabs = FindWindowExW(window, nullptr, WC_TABCONTROLW, nullptr);
+		Expect(TabCtrl_GetItemCount(tabs) == 5 && SelectTab(window, Tab::ProjectAdmin) && TabCtrl_GetCurSel(tabs) == 4 && !SelectTab(window, Tab::Admin),
+			L"Project Admin can be visible independently of DataSource Admin");
+		SetFocus(tabs); QueuedKey(tabs, VK_DOWN);
+		Expect(GetDlgCtrlID(GetFocus()) == kFirstProjectAdmin + 1 && QueuedKey(GetFocus(), VK_RETURN) &&
+			host.lastProjectAdmin == static_cast<UINT>(ProjectAdminCommand::Members), L"keyboard entry skips unauthorized creation and opens Users and Lists");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		Expect(!InvokeProjectAdmin(window, kFirstProjectAdmin), L"the disabled project New User button cannot be dispatched");
+		host.admin = AdminContext(L"ds/user/admin-role", true, false); Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 6 && SelectedTab(window) == Tab::ProjectAdmin && TabCtrl_GetCurSel(tabs) == 5,
+			L"inserting DataSource Admin preserves the selected Project Admin identity");
+		host.workflow = {true, false, L"ds/folder/workflow", {{11, L"Next", true, WorkflowActionKind::Next}}}; Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 7 && SelectedTab(window) == Tab::ProjectAdmin && TabCtrl_GetCurSel(tabs) == 6,
+			L"all three contextual pages coexist in stable keyboard order");
+		host.projectAdmin = ProjectAdminContext(L"ds/user/project-one", L"*BA", true, true, L"Test work area"); Refresh(window);
+		Expect(InvokeProjectAdmin(window, kFirstProjectAdmin) && host.lastProjectAdmin == static_cast<UINT>(ProjectAdminCommand::NewUser),
+			L"Project Admin exposes user creation when current datasource rights also allow it");
+		if (preview != nullptr)
+		{
+			RECT original{}; GetWindowRect(owner, &original);
+			SetWindowPos(owner, nullptr, 0, 0, 1280, 800, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+			HWND content = CreateWindowExW(0, L"STATIC", L"Project content", WS_CHILD | WS_VISIBLE, 0, 0, 1200, 600, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+			Expect(Dock(window, true) && SaveRibbonPreview(window, preview), L"native combined DataSource Admin and Project Admin preview written");
+			Dock(window, false); DestroyWindow(content);
+			SetWindowPos(owner, nullptr, 0, 0, original.right - original.left, original.bottom - original.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+		}
+		EnableWindow(owner, FALSE); Refresh(window);
+		Expect(SelectedTab(window) == Tab::ProjectAdmin && !InvokeProjectAdmin(window, kFirstProjectAdmin + 2),
+			L"native modal dialogs preserve Project Admin but block action dispatch");
+		EnableWindow(owner, TRUE); Refresh(window);
+		const auto before = host.projectAdminExecutions;
+		host.projectAdmin.context = L"ds/user/other-project";
+		Expect(!InvokeProjectAdmin(window, kFirstProjectAdmin + 2) && host.projectAdminExecutions == before,
+			L"changing the work area prevents stale project action dispatch");
+		Refresh(window); host.projectAdmin = {}; Refresh(window);
+		Expect(SelectedTab(window) == Tab::Home && TabCtrl_GetItemCount(tabs) == 6 && !InvokeProjectAdmin(window, kFirstProjectAdmin),
+			L"losing eligible userlist membership removes Project Admin and returns focus to Home");
+		host.projectAdmin = member; Refresh(window); SelectTab(window, Tab::ProjectAdmin);
+		host.destroyOnProjectAdminRefresh = window;
+		Expect(!InvokeProjectAdmin(window, kFirstProjectAdmin + 1) && !IsWindow(window), L"destruction during project context revalidation is safe");
+	}
+
+	enum class UserDialogMode { Federated, Logical, Cancel, Throw };
+	struct DialogFixture
+	{
+		HWND owner = nullptr; unsigned calls = 0, ticks = 0;
+		UserDialogMode mode = UserDialogMode::Federated;
+		const wchar_t* preview = nullptr;
+	};
 	DialogFixture* g_dialogFixture = nullptr;
 	bool CreateFixtureUser(void* context, const QuickAccess::ContextState&, const QuickAccess::NewUser& user, std::wstring& error)
 	{
+		using namespace QuickAccess;
 		auto& fixture = *static_cast<DialogFixture*>(context); ++fixture.calls;
+		const auto calls = fixture.calls;
+		HWND dialog = GetLastActivePopup(fixture.owner);
+		SendMessageW(dialog, WM_COMMAND, IDOK, 0); SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0);
+		Expect(fixture.calls == calls && !IsWindowEnabled(GetDlgItem(dialog, IDOK)), L"creation in progress blocks nested submissions and cancellation");
+		if (fixture.mode == UserDialogMode::Throw) throw 1;
+		if (fixture.mode == UserDialogMode::Logical)
+			Expect(user.type == AccountType::Logical && user.password == L"Fixture P@ssword 42!" && user.confirmation == user.password,
+				L"logical submission passes the exact confirmed password and selected type to the callback");
+		else Expect(user.type == AccountType::Federated && user.password.empty() && user.confirmation.empty() && user.email == L"fixture@example.test",
+			L"federated submission passes the identity email without a logical password");
 		if (user.name == L"rejected") { error = L"Server rejected this account."; return false; }
 		return user.name == L"fixture.user" && user.email == L"fixture@example.test";
 	}
+	void SelectUserType(HWND dialog, QuickAccess::AccountType type)
+	{
+		SendDlgItemMessageW(dialog, IDC_USER_TYPE, CB_SETCURSEL, static_cast<WPARAM>(type), 0);
+		SendMessageW(dialog, WM_COMMAND, MAKEWPARAM(IDC_USER_TYPE, CBN_SELCHANGE), reinterpret_cast<LPARAM>(GetDlgItem(dialog, IDC_USER_TYPE)));
+	}
+	void FillFixturePassword(HWND dialog)
+	{
+		SetDlgItemTextW(dialog, IDC_USER_PASSWORD, L"Fixture P@ssword 42!");
+		SetDlgItemTextW(dialog, IDC_USER_CONFIRMATION, L"Fixture P@ssword 42!");
+	}
 	void CALLBACK DriveUserDialog(HWND, UINT, UINT_PTR, DWORD)
 	{
+		using namespace QuickAccess;
 		auto& fixture = *g_dialogFixture;
 		HWND dialog = GetLastActivePopup(fixture.owner);
 		if (GetDlgItem(dialog, IDC_USER_NAME) == nullptr) return;
-		if (fixture.cancel || ++fixture.ticks > 10) { SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0); return; }
+		if (++fixture.ticks > 1) { SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0); return; }
+		Expect(SendDlgItemMessageW(dialog, IDC_USER_TYPE, CB_GETCURSEL, 0, 0) == 0 && !IsWindowVisible(GetDlgItem(dialog, IDC_USER_PASSWORD)),
+			L"New User defaults to federated identity and hides logical credentials");
+		Expect(GetNextDlgTabItem(dialog, GetDlgItem(dialog, IDC_USER_EMAIL), FALSE) != GetDlgItem(dialog, IDC_USER_PASSWORD) &&
+			AccessibleName(GetDlgItem(dialog, IDC_USER_EMAIL)).find(L"Identity") != std::wstring::npos,
+			L"federated keyboard traversal skips password controls and announces the identity email label");
+		if (fixture.mode != UserDialogMode::Federated)
+		{
+			RECT federated{}; GetWindowRect(dialog, &federated);
+			SelectUserType(dialog, AccountType::Logical);
+			RECT logical{}; GetWindowRect(dialog, &logical);
+			Expect(IsWindowVisible(GetDlgItem(dialog, IDC_USER_PASSWORD)) && logical.bottom - logical.top > federated.bottom - federated.top &&
+				SendDlgItemMessageW(dialog, IDC_USER_PASSWORD, EM_GETPASSWORDCHAR, 0, 0) != 0 &&
+				SendDlgItemMessageW(dialog, IDC_USER_CONFIRMATION, EM_GETPASSWORDCHAR, 0, 0) != 0,
+				L"logical mode expands the form and masks both password fields");
+			Expect(GetNextDlgTabItem(dialog, GetDlgItem(dialog, IDC_USER_EMAIL), FALSE) == GetDlgItem(dialog, IDC_USER_PASSWORD) &&
+				GetNextDlgTabItem(dialog, GetDlgItem(dialog, IDC_USER_PASSWORD), FALSE) == GetDlgItem(dialog, IDC_USER_CONFIRMATION) &&
+				AccessibleName(GetDlgItem(dialog, IDC_USER_EMAIL)).find(L"Contact") != std::wstring::npos,
+				L"logical keyboard order reaches both credentials and the contact email has the correct accessible label");
+			FillFixturePassword(dialog); SelectUserType(dialog, AccountType::Federated);
+			Expect(GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_PASSWORD)) == 0 && GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_CONFIRMATION)) == 0 &&
+				!IsWindowEnabled(GetDlgItem(dialog, IDC_USER_PASSWORD)), L"changing to federated mode clears and disables logical credentials");
+			SelectUserType(dialog, AccountType::Logical);
+			if (fixture.mode == UserDialogMode::Cancel)
+			{ FillFixturePassword(dialog); SendMessageW(dialog, WM_COMMAND, IDCANCEL, 0); return; }
+		}
 		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
 		Expect(fixture.calls == 0, L"blank New User submissions do not reach the creation callback");
-		SetDlgItemTextW(dialog, IDC_USER_NAME, L"rejected"); SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+		SetDlgItemTextW(dialog, IDC_USER_NAME, L"rejected");
+		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
+		Expect(fixture.calls == 0, L"missing identity or password prevents creation before any native callback");
+		SetDlgItemTextW(dialog, IDC_USER_EMAIL, L"fixture@example.test");
+		if (fixture.mode != UserDialogMode::Federated) FillFixturePassword(dialog);
+		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
 		Expect(fixture.calls == 1 && IsWindow(dialog) && GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_STATUS)) > 0, L"server rejection keeps New User open with an inline error");
+		Expect(GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_PASSWORD)) == 0 && GetWindowTextLengthW(GetDlgItem(dialog, IDC_USER_CONFIRMATION)) == 0 &&
+			IsWindowEnabled(GetDlgItem(dialog, IDOK)) && IsWindowEnabled(GetDlgItem(dialog, IDCANCEL)),
+			L"server errors and throwing callbacks clear password controls and restore usable dialog buttons");
+		if (fixture.mode == UserDialogMode::Throw) { SendMessageW(dialog, WM_CLOSE, 0, 0); return; }
 		SetDlgItemTextW(dialog, IDC_USER_NAME, L"fixture.user"); SetDlgItemTextW(dialog, IDC_USER_EMAIL, L"fixture@example.test");
+		SetDlgItemTextW(dialog, IDC_USER_DESCRIPTION, L"Design coordination user");
+		SetDlgItemTextW(dialog, IDC_USER_STATUS, L"");
+		if (fixture.mode == UserDialogMode::Logical) FillFixturePassword(dialog);
+		if (fixture.preview != nullptr) Expect(SaveRibbonPreview(dialog, fixture.preview), L"native account-type form preview written using fake account data");
 		SendMessageW(dialog, WM_COMMAND, IDOK, 0);
 	}
-	void CheckUserDialog(HWND owner)
+	void CheckUserDialog(HWND owner, const wchar_t* federatedPreview, const wchar_t* logicalPreview)
 	{
 		using namespace QuickAccess;
 		std::wstring error;
-		Expect(!ValidateNewUser({L"   ", L"", L""}, error) && !error.empty(), L"New User validates a nonblank account name");
-		Expect(!ValidateNewUser({L"bad\nname", L"", L""}, error), L"New User rejects control characters in account names");
-		const auto shown = AdminContext(L"datasource/user/session", true, false, true);
-		DialogFixture fixture{owner}; g_dialogFixture = &fixture;
-		const UINT_PTR timer = SetTimer(nullptr, 0, 50, DriveUserDialog);
-		Expect(timer != 0, L"native New User dialog driver available");
-		if (timer == 0) return;
-		const auto result = ShowNewUserDialog(owner, GetModuleHandleW(nullptr), shown, L"Test datasource", &fixture, CreateFixtureUser);
-		KillTimer(nullptr, timer);
-		Expect(result == IDOK && fixture.calls == 2 && IsWindowEnabled(owner), L"native New User dialog submits valid fields and restores owner activation");
-		fixture = {owner}; fixture.cancel = true;
-		const UINT_PTR cancelTimer = SetTimer(nullptr, 0, 50, DriveUserDialog);
-		if (cancelTimer != 0)
+		NewUser user;
+		Expect(user.type == AccountType::Federated, L"new accounts prefer federated identity by default");
+		user.name = L"   ";
+		Expect(!ValidateNewUser(user, error) && !error.empty(), L"New User validates a nonblank account name");
+		user.name = L"bad\nname";
+		Expect(!ValidateNewUser(user, error), L"New User rejects control characters in account names");
+		user.name = L"fixture.user";
+		int field = 0;
+		Expect(!ValidateNewUser(user, error, &field) && field == IDC_USER_EMAIL, L"federated accounts require an identity email");
+		for (const auto* email : {L"no-at", L"@example.test", L"user@", L"user@@example.test", L"two@example.test;other@example.test", L"user@example.test\n"})
 		{
-			const auto cancelled = ShowNewUserDialog(owner, GetModuleHandleW(nullptr), shown, L"Test datasource", &fixture, CreateFixtureUser);
-			KillTimer(nullptr, cancelTimer);
-			Expect(cancelled == IDCANCEL && fixture.calls == 0, L"cancelling New User creates no account");
+			user.email = email;
+			Expect(!ValidateNewUser(user, error), L"invalid federated identity email is refused");
+		}
+		user.email = L"fixture@example.test";
+		Expect(ValidateNewUser(user, error), L"federated accounts accept an identity email without a ProjectWise password");
+		user.password = L"unexpected";
+		Expect(!ValidateNewUser(user, error), L"a federated request cannot accidentally include logical credentials");
+		user.ClearCredentials(); user.type = static_cast<AccountType>(42);
+		Expect(!ValidateNewUser(user, error), L"unknown account types are rejected");
+		user.type = AccountType::Logical; user.email.clear();
+		Expect(!ValidateNewUser(user, error, &field) && field == IDC_USER_PASSWORD, L"logical accounts require a password even without a contact email");
+		user.password = L"Fixture P@ssword 42!"; user.confirmation = L"different";
+		Expect(!ValidateNewUser(user, error), L"logical accounts reject mismatched password confirmation");
+		user.confirmation = user.password;
+		Expect(ValidateNewUser(user, error), L"logical accounts accept a confirmed password without an optional contact email");
+		user.password = user.confirmation = std::wstring(kMaxLogicalPasswordLength, L'x');
+		Expect(ValidateNewUser(user, error), L"logical passwords accept the SDK maximum length");
+		user.password += L'x'; user.confirmation = user.password;
+		Expect(!ValidateNewUser(user, error), L"overlong logical passwords are rejected rather than silently truncated");
+		user.password = user.confirmation = std::wstring(L"ab\0cd", 5);
+		Expect(!ValidateNewUser(user, error), L"embedded nulls cannot shorten a password at the native API boundary");
+		user.password = user.confirmation = L"  Fixture \u00a3 password  ";
+		Expect(ValidateNewUser(user, error), L"password whitespace and Unicode are preserved for server policy validation");
+		const auto nativeError = UserCreationError(58004, L"Invalid data", L"Datasource policy requires an authentication identity.");
+		Expect(nativeError.find(L"58004") != std::wstring::npos && nativeError.find(L"authentication identity") != std::wstring::npos,
+			L"New User retains the native error code, message and extended server detail");
+		Expect(UserCreationError(58004, L"", L"").find(L"does not identify a permissions problem") != std::wstring::npos,
+			L"generic invalid-data errors are not misreported as proven permissions failures");
+		const auto shown = AdminContext(L"datasource/user/session", true, false);
+		for (const auto mode : {UserDialogMode::Federated, UserDialogMode::Logical, UserDialogMode::Cancel, UserDialogMode::Throw})
+		{
+			DialogFixture fixture{owner}; fixture.mode = mode;
+			fixture.preview = mode == UserDialogMode::Federated ? federatedPreview : mode == UserDialogMode::Logical ? logicalPreview : nullptr;
+			g_dialogFixture = &fixture;
+			const UINT_PTR timer = SetTimer(nullptr, 0, 50, DriveUserDialog);
+			Expect(timer != 0, L"native New User dialog driver available");
+			if (timer == 0) continue;
+			const auto result = ShowNewUserDialog(owner, GetModuleHandleW(nullptr), shown, L"Test datasource", &fixture, CreateFixtureUser);
+			KillTimer(nullptr, timer);
+			const bool creates = mode == UserDialogMode::Federated || mode == UserDialogMode::Logical;
+			Expect(result == (creates ? IDOK : IDCANCEL) && fixture.calls == (creates ? 2U : mode == UserDialogMode::Throw ? 1U : 0U) && IsWindowEnabled(owner),
+				L"native New User restores owner activation after successful creation, cancellation or a callback exception");
 		}
 		g_dialogFixture = nullptr;
 	}
@@ -1452,7 +1776,11 @@ namespace
 		QuickAccess::SelectTab(window, Tab::Workflow);
 		EnableWindow(owner, FALSE);
 		Expect(!QuickAccess::HandleKey(window, VK_RETURN) && !QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow), L"modal Explorer blocks workflow shortcuts and execution");
+		QuickAccess::Refresh(window);
+		Expect(QuickAccess::SelectedTab(window) == Tab::Workflow && TabCtrl_GetItemCount(tabs) == 5,
+			L"an external modal ProjectWise dialog disables workflow actions without removing or closing the selected tab");
 		EnableWindow(owner, TRUE);
+		QuickAccess::Refresh(window);
 		QuickAccess::SetDisplayMode(window, DisplayMode::Minimized);
 		QuickAccess::SelectTab(window, Tab::Workflow);
 		SetFocus(tabs);
@@ -1464,9 +1792,11 @@ namespace
 			L"losing the workflow removes its tab and popup and returns focus to Home tabs");
 		Expect(!QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow), L"removed workflow controls cannot dispatch");
 		host.workflow = {true, false, L"folder with no selected documents", {}};
+		host.workflow.status = L"The folder has a workflow. Select documents to see available actions.";
 		QuickAccess::Refresh(window);
 		Expect(QuickAccess::SelectTab(window, Tab::Workflow) && GetDlgItem(page, QuickAccess::kFirstWorkflow) == nullptr,
 			L"a workflow folder without a document selection exposes no executable document actions");
+		Expect(AccessibleName(page) == host.workflow.status, L"workflow selection guidance is available to screen readers as well as the painted caption");
 		host.workflowAvailable = false;
 		QuickAccess::Refresh(window);
 		Expect(TabCtrl_GetItemCount(tabs) == 4 && QuickAccess::SelectedTab(window) == Tab::Home, L"failed workflow queries remove stale controls");
@@ -1615,9 +1945,13 @@ int wmain(int argc, wchar_t* argv[])
 	CheckVersionsToggle(owner, argc >= 7 && wcscmp(argv[5], L"--view-preview") == 0 ? argv[6] : nullptr);
 	CheckSelectors(owner, argc >= 9 && wcscmp(argv[7], L"--selectors-preview") == 0 ? argv[8] : nullptr);
 	CheckAdminAndRecovery(owner, argc >= 11 && wcscmp(argv[9], L"--admin-preview") == 0 ? argv[10] : nullptr);
-	CheckUserDialog(owner);
+	CheckProjectAdmin(owner, argc >= 21 && wcscmp(argv[19], L"--project-admin-preview") == 0 ? argv[20] : nullptr);
+	CheckUserManager(owner, argc >= 23 && wcscmp(argv[21], L"--user-manager-preview") == 0 ? argv[22] : nullptr, Expect, SaveRibbonPreview);
+	CheckUserDialog(owner, argc >= 17 && wcscmp(argv[15], L"--new-user-preview") == 0 ? argv[16] : nullptr,
+		argc >= 19 && wcscmp(argv[17], L"--logical-user-preview") == 0 ? argv[18] : nullptr);
 	CheckClassicRestoration();
 	CheckVersionStacks(argc >= 13 && wcscmp(argv[11], L"--stacks-preview") == 0 ? argv[12] : nullptr, Expect, SaveRibbonPreview);
+	CheckNotifications(owner, argc >= 15 && wcscmp(argv[13], L"--notification-preview") == 0 ? argv[14] : nullptr, Expect, SaveRibbonPreview);
 	HWND keyboard = QuickAccess::Create(owner, instance, callbacks);
 	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;

@@ -25,6 +25,8 @@ namespace QuickAccess
 				if (item.hSubMenu != nullptr)
 				{
 					bool childEnabled = enabled && (item.fState & (MFS_DISABLED | MFS_GRAYED)) == 0;
+					// WRE can replace every standard child. The native Change State popup ID still anchors its branch.
+					if (item.wID == ids.change) { enabled = childEnabled; return item.hSubMenu; }
 					if (const HMENU branch = FindBranch(item.hSubMenu, ids, childEnabled, depth + 1))
 					{
 						enabled = childEnabled;
