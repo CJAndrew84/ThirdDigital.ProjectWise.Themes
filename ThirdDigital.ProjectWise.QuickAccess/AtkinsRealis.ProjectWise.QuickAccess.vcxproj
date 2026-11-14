@@ -45,6 +45,10 @@
 	<ClCompile Include="src\Workflow.cpp" />
 	<ClCompile Include="src\Admin.cpp" />
 	<ClCompile Include="src\ClassicUi.cpp" />
+	<ClCompile Include="src\VersionStacks.cpp" />
+	<ClCompile Include="src\VersionStacksAdapter.cpp" />
+	<ClInclude Include="src\VersionStacks.h" />
+	<ClInclude Include="src\VersionStacksAdapter.h" />
 	<ResourceCompile Include="src\Admin.rc" />
 	<ClInclude Include="src\QuickAccess.h" />
 	<ClInclude Include="src\Workflow.h" />
