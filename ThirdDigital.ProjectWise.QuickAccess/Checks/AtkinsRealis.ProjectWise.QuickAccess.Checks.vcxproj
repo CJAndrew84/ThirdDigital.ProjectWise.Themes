@@ -44,6 +44,7 @@
 	<ClCompile Include="..\src\ClassicUi.cpp" />
 	<ClCompile Include="..\src\VersionStacks.cpp" />
 	<ClCompile Include="..\src\Notifications.cpp" />
+	<ClCompile Include="..\src\NotificationStore.cpp" />
 	<ResourceCompile Include="..\src\Notifications.rc" />
 	<ResourceCompile Include="..\src\Admin.rc" />
 	<Manifest Include="app.manifest" />

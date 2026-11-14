@@ -7,6 +7,8 @@
 #include <delayimp.h>
 #include "NotificationAdapter.h"
 #include "Notifications.h"
+#include "NotificationStore.h"
+#include "NotificationResources.h"
 #include <algorithm>
 #include <cstring>
 #include <map>
@@ -21,11 +23,16 @@ namespace QuickAccess
 		HINSTANCE g_instance = nullptr;
 		HWND g_window = nullptr;
 		DWORD g_thread = 0;
-		UINT g_command = 0;
+		UINT g_command = 0, g_basketCommand = 0, g_parkCommand = 0;
 		bool g_available = false, g_enabled = true, g_started = false, g_dialog = false, g_polling = false;
 		bool (*g_workflowCommand)(UINT) = nullptr;
 		N::Watcher g_watcher;
+		N::Basket g_basket;
+		bool g_autoPark = false, g_storageBlocked = false, g_saveWarning = false;
 		std::wstring g_context;
+		std::wstring g_owner;
+		struct Unsaved { N::Batch batch; bool blocked = false; };
+		std::map<std::wstring, Unsaved> g_unsaved;
 		std::vector<N::Batch> g_ready;
 		std::map<LONG, std::wstring> g_states;
 		std::uint64_t g_activeToken = 0;
@@ -46,14 +53,15 @@ namespace QuickAccess
 		{
 			wchar_t value[1024]{}; return aaApi_GetActiveDatasourceName(value, ARRAYSIZE(value)) ? value : L"";
 		}
-		std::wstring Context()
+		std::wstring SessionContext()
 		{
-			if (!g_available || !g_enabled || !g_started || GetCurrentThreadId() != g_thread) return {};
+			if (!g_started || GetCurrentThreadId() != g_thread) return {};
 			const HDSOURCE source = aaApi_GetActiveDatasource(); const LONG user = aaApi_GetCurrentUserId();
 			if (!source || user <= 0) return {};
 			const auto name = Datasource(); if (name.empty()) return {};
 			return std::to_wstring(reinterpret_cast<UINT_PTR>(source)) + L"/" + std::to_wstring(user) + L"/" + name;
 		}
+		std::wstring Context() { return g_available && g_enabled ? SessionContext() : std::wstring{}; }
 		std::wstring StateName(LONG id)
 		{
 			if (id <= 0) return L"No workflow state";
@@ -68,16 +76,18 @@ namespace QuickAccess
 			if (g_states.size() >= 256) g_states.clear();
 			g_states[id] = name; return name;
 		}
-		std::wstring Link(const AADOC_ITEM& document)
+		LPWSTR NativeWebLink(AADOC_ITEM* document)
 		{
-			HMONIKER moniker = nullptr; LPWSTR* values = nullptr; std::wstring result;
-			if (aaApi_GetDocumentMonikers(1, &document, &moniker) && moniker)
-			{
-				if (aaApi_MonikersToStrings(1, &moniker, &values, AAMONIKERF_RESOURCE_NAME | AAMONIKERF_DONT_VALIDATE | AAMONIKERF_USE_EXISTING_LOGIN) && values && values[0]) result = values[0];
-				if (values) aaApi_Free(values);
-				aaApi_DestroyMoniker(moniker);
-			}
-			return result;
+			__try { return aaApi_GetDocumentWebLinksByIds(1, document); }
+			__except (SdkException(GetExceptionCode())) { return nullptr; }
+		}
+		std::wstring Link(AADOC_ITEM document, const std::wstring& guid)
+		{
+			std::wstring result;
+			if (LPWSTR value = NativeWebLink(&document)) { result = value; aaApi_Free(value); }
+			while (!result.empty() && iswspace(result.back())) result.pop_back();
+			while (!result.empty() && iswspace(result.front())) result.erase(result.begin());
+			return N::ModernDocumentLink(result, Datasource(), guid);
 		}
 		bool Read(const AADOC_ITEM& id, N::Document& document, bool includeLink)
 		{
@@ -97,13 +107,50 @@ namespace QuickAccess
 			document.version = version ? version : L"";
 			document.workflowName = document.workflow > 0 ? L"Workflow " + std::to_wstring(document.workflow) : L"No workflow";
 			document.stateName = StateName(document.state);
-			if (includeLink) document.link = Link(id);
+			if (includeLink) document.link = Link(id, document.guid);
 			return document.sequence >= 0 && document.workflow >= 0 && document.state >= 0;
 		}
 		void Reset(const std::wstring& context)
 		{
 			if (g_context == context) return;
+			if (!g_owner.empty())
+			{
+				if (g_storageBlocked || !N::SaveBasket(g_owner, g_basket.Items())) g_unsaved[g_owner] = {g_basket.Items(), g_storageBlocked};
+				else g_unsaved.erase(g_owner);
+			}
 			g_context = context; g_watcher.Clear(); g_ready.clear(); g_states.clear(); g_activeToken = 0;
+			g_basket.Clear(); g_owner.clear(); g_storageBlocked = false; g_saveWarning = false;
+			if (!context.empty())
+			{
+				g_owner = Datasource() + L"/user/" + std::to_wstring(aaApi_GetCurrentUserId());
+				if (const auto cached = g_unsaved.find(g_owner); cached != g_unsaved.end())
+				{
+					auto batch = cached->second.batch; batch.context = context; g_basket.Replace(std::move(batch)); g_storageBlocked = cached->second.blocked; return;
+				}
+				N::Batch saved;
+				if (N::LoadBasket(g_owner, context, saved)) g_basket.Replace(std::move(saved));
+				else g_storageBlocked = true; // Preserve an unreadable existing record instead of overwriting it.
+			}
+		}
+		bool Persist()
+		{
+			if (g_owner.empty()) return false;
+			if (g_storageBlocked || !N::SaveBasket(g_owner, g_basket.Items())) { g_unsaved[g_owner] = {g_basket.Items(), g_storageBlocked}; return false; }
+			g_unsaved.erase(g_owner); return true;
+		}
+		bool Park(const N::Batch& batch)
+		{
+			if (!g_basket.Add(batch))
+			{
+				MessageBoxW(aaApi_GetMainFrameWindow(), L"The notification basket is full (250 document/version entries). Review and clear items, then try adding this batch again.", L"Notification basket", MB_OK | MB_ICONINFORMATION);
+				return false;
+			}
+			if (!Persist() && !g_saveWarning)
+			{
+				g_saveWarning = true; g_autoPark = false;
+				MessageBoxW(aaApi_GetMainFrameWindow(), L"The basket is available in this session, but Windows could not save it. Keep Explorer open and use Copy message before exiting. Any unreadable saved basket has been preserved.", L"Notification basket", MB_OK | MB_ICONINFORMATION);
+			}
+			return true;
 		}
 		bool Capture(const std::vector<AADOC_ITEM>& ids, std::vector<N::Document>& before)
 		{
@@ -198,7 +245,7 @@ namespace QuickAccess
 			__try { return SafeHook(hook, type, first); }
 			__except (SdkException(GetExceptionCode())) { return AAHOOK_SUCCESS; }
 		}
-		bool Valid(void*, const std::wstring& context) { return Context() == context; }
+		bool Valid(void*, const std::wstring& context) { return SessionContext() == context; }
 		bool Open(void*, const std::wstring& uri, std::wstring& error)
 		{
 			if (!(uri.starts_with(L"https://teams.microsoft.com/l/chat/0/0?users=") || uri.starts_with(L"mailto:"))) return false;
@@ -223,7 +270,9 @@ namespace QuickAccess
 		void Tick()
 		{
 			if (g_polling || g_dialog) return;
-			const auto context = Context(); Reset(context); if (context.empty() || g_activeToken) return;
+			const auto context = SessionContext(); Reset(context);
+			if (context.empty() || !g_available || !g_enabled) { g_watcher.Clear(); g_ready.clear(); return; }
+			if (g_activeToken) return;
 			const HWND frame = aaApi_GetMainFrameWindow(); if (!IsWindow(frame) || !IsWindowEnabled(frame)) return;
 			g_polling = true;
 			struct Polling { ~Polling() { g_polling = false; } } polling;
@@ -238,7 +287,15 @@ namespace QuickAccess
 					g_watcher.Observe(probe.token, probe.before, found ? &after : nullptr, GetTickCount64());
 				}
 			}
-			for (auto& batch : g_watcher.TakeReady(context, GetTickCount64())) if (g_ready.size() < 4) g_ready.push_back(std::move(batch));
+			for (auto& batch : g_watcher.TakeReady(context, GetTickCount64()))
+			{
+				SYSTEMTIME utc{}; GetSystemTime(&utc); wchar_t time[40]{};
+				swprintf_s(time, L"%04u-%02u-%02u %02u:%02u:%02u UTC", utc.wYear, utc.wMonth, utc.wDay, utc.wHour, utc.wMinute, utc.wSecond);
+				for (auto& change : batch.changes) change.observedAt = time;
+				if (g_autoPark) { if (!Park(batch) && g_ready.size() < 4) g_ready.push_back(std::move(batch)); }
+				else if (g_ready.size() < 4) g_ready.push_back(std::move(batch));
+				else Park(batch); // Busy users retain overflow in the basket instead of silently dropping confirmed changes.
+			}
 			const HWND foreground = GetForegroundWindow();
 			if (g_ready.empty() || (foreground != frame && GetAncestor(foreground, GA_ROOTOWNER) != frame)) return;
 			N::Batch batch = std::move(g_ready.front()); g_ready.erase(g_ready.begin());
@@ -253,7 +310,8 @@ namespace QuickAccess
 			if (batch.changes.empty() || Context() != context) return;
 			g_dialog = true;
 			struct Dialog { ~Dialog() { g_dialog = false; } } dialog;
-			N::ShowDialog(frame, g_instance, batch, {nullptr, Open, Copy, Valid});
+			if (N::ShowDialog(frame, g_instance, batch, {nullptr, Open, Copy, Valid}) == IDC_NOTIFY_PARK && Context() == context)
+				if (!Park(batch) && g_ready.size() < 4) g_ready.push_back(std::move(batch));
 		}
 		void TickSafe() noexcept { try { Tick(); } catch (...) { g_polling = false; g_dialog = false; } }
 		LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -274,6 +332,46 @@ namespace QuickAccess
 			return 0;
 		}
 		LONG CALLBACK State(LPAACMDSTATE) { return !g_available || !g_started ? AAMS_GRAYED : g_enabled ? AAMS_CHECKED : 0; }
+		LONG BasketImpl(LPAACMDPARAM command)
+		{
+			if (!command || !g_started || g_dialog || g_polling) return -1;
+			const auto context = SessionContext(); if (context.empty()) return -1; Reset(context);
+			if (static_cast<UINT>(command->lCommandId) == g_parkCommand)
+			{ if (!g_available || !g_enabled) return -1; g_autoPark = !g_autoPark; return 0; }
+			if (static_cast<UINT>(command->lCommandId) != g_basketCommand) return -1;
+			N::Batch batch = g_basket.Items(); if (batch.changes.empty()) return 0;
+			const HWND frame = aaApi_GetMainFrameWindow(); if (!IsWindowEnabled(frame)) return -1;
+			g_dialog = true;
+			struct Dialog { ~Dialog() { g_dialog = false; } } dialog;
+			// This is the user's saved activity/draft, not a refreshed document-list view. Keep the recorded observed state.
+			N::ShowDialog(frame, g_instance, batch, {nullptr, Open, Copy, Valid}, true);
+			if (SessionContext() == context)
+			{
+				g_basket.Replace(std::move(batch));
+				if (!Persist()) MessageBoxW(frame, L"The basket changes could not be saved. Copy the message before closing Explorer.", L"Notification basket", MB_OK | MB_ICONINFORMATION);
+			}
+			return 0;
+		}
+		LONG BasketSafe(LPAACMDPARAM command) noexcept { try { return BasketImpl(command); } catch (...) { g_dialog = false; return -1; } }
+		LONG CALLBACK BasketCommand(LPAACMDPARAM command)
+		{
+			__try { return BasketSafe(command); }
+			__except (SdkException(GetExceptionCode())) { g_dialog = false; return -1; }
+		}
+		LONG CALLBACK BasketState(LPAACMDSTATE)
+		{
+			return !g_started || g_basket.Items().changes.empty() ? AAMS_GRAYED : 0;
+		}
+		LONG CALLBACK ParkState(LPAACMDSTATE) { return !g_available || !g_started || !g_enabled ? AAMS_GRAYED : g_autoPark ? AAMS_CHECKED : 0; }
+		bool AddMenu(const wchar_t* text, UINT& id, bool basket)
+		{
+			id = aaApi_ReserveCommandIdByType(AAMENU_TOOLS); if (!id) return false;
+			AADMSMENUITEM item{};
+			item.ulMask = AADMSMIF_FLAGS | AADMSMIF_NAME | AADMSMIF_CMDTYPE | AADMSMIF_CMDID | AADMSMIF_CALLBACK | AADMSMIF_STATEPROC;
+			item.uiFlags = AAMIF_COMMAND; item.uiCmdType = AAMENU_TOOLS; item.uiCommandId = id; item.ushParamType = AACMDPT_GENERIC;
+			item.lptstrName = const_cast<LPWSTR>(text); item.fpExecute = BasketCommand; item.fpGetState = basket ? BasketState : ParkState;
+			return aaApi_AddCustomMenuItem(0, AADMSMI_LAST, &item) != 0;
+		}
 		bool Start(HINSTANCE instance, bool (*workflowCommand)(UINT))
 		{
 			if (g_started) return true;
@@ -298,6 +396,11 @@ namespace QuickAccess
 			item.uiFlags = AAMIF_COMMAND; item.uiCmdType = AAMENU_TOOLS; item.uiCommandId = g_command; item.ushParamType = AACMDPT_GENERIC;
 			item.lptstrName = const_cast<LPWSTR>(L"Prompt after workflow state changes"); item.fpExecute = Toggle; item.fpGetState = State;
 			if (!g_command || !aaApi_AddCustomMenuItem(0, AADMSMI_LAST, &item))
+			{
+				for (const auto& [id, kind] : registered) aaApi_RemoveHook(id, kind, Hook);
+				DestroyWindow(g_window); g_window = nullptr; return false;
+			}
+			if (!AddMenu(L"Notification basket...", g_basketCommand, true) || !AddMenu(L"Park workflow notifications automatically", g_parkCommand, false))
 			{
 				for (const auto& [id, kind] : registered) aaApi_RemoveHook(id, kind, Hook);
 				DestroyWindow(g_window); g_window = nullptr; return false;

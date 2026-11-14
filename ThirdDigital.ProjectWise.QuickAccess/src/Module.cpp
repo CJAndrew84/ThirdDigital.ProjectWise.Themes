@@ -631,8 +631,12 @@ namespace
 		{
 			WorkflowSelection selection;
 			QuickAccess::WorkflowState current;
-			if (!BuildWorkflow(current, selection, true) || !QuickAccess::CanInvokeWorkflow(shown, current, command) ||
-				selection.documents.empty() || selection.documents.size() > static_cast<std::size_t>(MAXLONG)) return false;
+			if (!BuildWorkflow(current, selection, true)) return false;
+			if (!QuickAccess::CanInvokeWorkflow(shown, current, command) || selection.documents.empty() || selection.documents.size() > static_cast<std::size_t>(MAXLONG))
+			{
+				if (current.visible && !current.status.empty()) MessageBoxW(g_frame, current.status.c_str(), L"Workflow action unavailable", MB_OK | MB_ICONINFORMATION);
+				return false;
+			}
 			if (!FocusSelection(selection.list)) return false;
 			const auto notification = QuickAccess::BeginWorkflowNotification(command);
 			struct Notification { std::uint64_t token; ~Notification() { QuickAccess::EndWorkflowNotification(token); } } notify{notification};

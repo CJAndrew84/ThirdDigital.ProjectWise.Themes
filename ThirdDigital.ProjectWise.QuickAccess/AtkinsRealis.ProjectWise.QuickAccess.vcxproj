@@ -49,6 +49,8 @@
 	<ClCompile Include="src\VersionStacksAdapter.cpp" />
 	<ClCompile Include="src\Notifications.cpp" />
 	<ClCompile Include="src\NotificationAdapter.cpp" />
+	<ClCompile Include="src\NotificationStore.cpp" />
+	<ClInclude Include="src\NotificationStore.h" />
 	<ClInclude Include="src\Notifications.h" />
 	<ClInclude Include="src\NotificationAdapter.h" />
 	<ClInclude Include="src\NotificationResources.h" />

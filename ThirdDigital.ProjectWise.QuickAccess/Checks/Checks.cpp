@@ -1486,6 +1486,7 @@ namespace
 		QuickAccess::Refresh(window);
 		Expect(QuickAccess::SelectTab(window, Tab::Workflow) && GetDlgItem(page, QuickAccess::kFirstWorkflow) == nullptr,
 			L"a workflow folder without a document selection exposes no executable document actions");
+		Expect(AccessibleName(page) == host.workflow.status, L"workflow selection guidance is available to screen readers as well as the painted caption");
 		host.workflowAvailable = false;
 		QuickAccess::Refresh(window);
 		Expect(TabCtrl_GetItemCount(tabs) == 4 && QuickAccess::SelectedTab(window) == Tab::Home, L"failed workflow queries remove stale controls");

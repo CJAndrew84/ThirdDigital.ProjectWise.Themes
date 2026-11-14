@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace QuickAccess::Notifications
 {
@@ -14,12 +15,30 @@ namespace QuickAccess::Notifications
 	};
 	bool SameDocument(const Document& a, const Document& b) noexcept;
 	bool SameState(const Document& a, const Document& b) noexcept;
-	struct Change { Document before, after; };
+	struct Change { Document before, after; std::wstring observedAt; };
+	enum class LinkApp { Choose = 0, Explorer = 1, Web = 2, WebView = 3 };
 	struct Batch
 	{
 		std::wstring context, datasource, initiator;
 		std::vector<Change> changes;
+		std::wstring note;
+		LinkApp linkApp = LinkApp::Choose;
 	};
+	class Basket
+	{
+	public:
+		static constexpr std::size_t kMaxItems = 250;
+		bool Add(const Batch& batch);
+		void Remove(std::size_t index);
+		void Clear() noexcept { batch_ = {}; }
+		void Replace(Batch batch) { batch_ = std::move(batch); }
+		const Batch& Items() const noexcept { return batch_; }
+	private:
+		Batch batch_;
+	};
+	bool IsHttpsLink(const std::wstring& value) noexcept;
+	std::wstring ModernDocumentLink(const std::wstring& nativeLink, const std::wstring& datasource, const std::wstring& documentGuid);
+	std::wstring WithLinkApp(const std::wstring& link, LinkApp app);
 	struct Probe { std::uint64_t token = 0; Document before; };
 	class Watcher
 	{
@@ -64,5 +83,6 @@ namespace QuickAccess::Notifications
 		bool (*copy)(void*, const std::wstring& message, std::wstring& error) = nullptr;
 		bool (*valid)(void*, const std::wstring& context) = nullptr;
 	};
-	INT_PTR ShowDialog(HWND owner, HINSTANCE instance, const Batch& batch, Composer composer);
+	// Returns IDC_NOTIFY_PARK after choosing Add to basket; changes survive in batch for the host to store.
+	INT_PTR ShowDialog(HWND owner, HINSTANCE instance, Batch& batch, Composer composer, bool basket = false);
 }

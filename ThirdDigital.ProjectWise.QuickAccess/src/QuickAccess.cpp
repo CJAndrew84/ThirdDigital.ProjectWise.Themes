@@ -697,6 +697,7 @@ namespace QuickAccess
 				else
 				{
 					for (std::size_t i = 0; i < buttons.size(); ++i) EnableWindow(buttons[i], context.actions[i].enabled);
+					if (state.tab == tab) SetWindowTextW(state.page, context.status.empty() ? kTabs[static_cast<int>(tab)] : context.status.c_str());
 					LayoutRibbon(state.window, state);
 					const auto found = std::find(buttons.begin(), buttons.end(), GetFocus());
 					const int focused = found == buttons.end() ? -1 : static_cast<int>(found - buttons.begin());
@@ -1876,6 +1877,7 @@ namespace QuickAccess
 		}
 		if (state->tab != tab) state->focusedCommand = -1;
 		state->tab = tab;
+		SetWindowTextW(state->page, Contextual(tab) && !Context(*state, tab).status.empty() ? Context(*state, tab).status.c_str() : kTabs[static_cast<int>(tab)]);
 		state->scroll = 0;
 		TabCtrl_SetCurSel(state->tabs, TabIndex(state->tabs, tab));
 		if (!LayoutRibbon(window, *state)) { Trace(L"could not switch ribbon tabs"); return false; }
