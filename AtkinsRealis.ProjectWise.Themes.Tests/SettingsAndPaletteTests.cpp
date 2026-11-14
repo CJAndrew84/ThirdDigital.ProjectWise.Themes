@@ -325,12 +325,12 @@ public:
             ScopedEnvironment temp(L"TEMP", good);
             Log(L"unit test entry %d", 42);
         }
-        std::ifstream file(good + L"\\ThirdDigital\\projectwise-themes.log", std::ios::binary);
+        std::ifstream file(good + L"\\AtkinsRealis\\projectwise-themes.log", std::ios::binary);
         std::stringstream text;
         text << file.rdbuf();
         Assert::IsTrue(text.str().find("unit test entry 42") != std::string::npos, L"log line is appended as UTF-8");
         file.close();
-        DeleteFileW((good + L"\\ThirdDigital\\projectwise-themes.log").c_str());
+        DeleteFileW((good + L"\\AtkinsRealis\\projectwise-themes.log").c_str());
         RemoveDirectoryW((good + L"\\AtkinsRealis").c_str());
 
         const std::wstring blocker = good + L"\\blocker";

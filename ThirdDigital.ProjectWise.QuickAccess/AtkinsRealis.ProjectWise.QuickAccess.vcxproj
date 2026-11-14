@@ -25,6 +25,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
 	<ClCompile>
+	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
 	  <SDLCheck>true</SDLCheck>
 	  <PreprocessorDefinitions>WIN32;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
 	  <AdditionalIncludeDirectories>$(PWSDKDir)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -32,21 +33,42 @@
 	<Link>
 	  <SubSystem>Windows</SubSystem>
 	  <ModuleDefinitionFile>src\QuickAccess.def</ModuleDefinitionFile>
-	  <AdditionalDependencies>comctl32.lib;shell32.lib;dmawin.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+	  <AdditionalDependencies>comctl32.lib;shell32.lib;dmawin.lib;dmscli.lib;dmsgen.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
 	  <AdditionalLibraryDirectories>$(PWSDKDir)\lib\Win32;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-	  <DelayLoadDLLs>dmawin.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+	  <DelayLoadDLLs>dmawin.dll;dmscli.dll;dmsgen.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
 	  <GenerateDebugInformation>true</GenerateDebugInformation>
 	</Link>
   </ItemDefinitionGroup>
   <ItemGroup>
 	<ClCompile Include="src\Module.cpp" />
 	<ClCompile Include="src\QuickAccess.cpp" />
+	<ClCompile Include="src\Workflow.cpp" />
+	<ClCompile Include="src\Admin.cpp" />
+	<ClCompile Include="src\UserManager.cpp" />
+	<ClCompile Include="src\UserManagerModel.cpp" />
+	<ClCompile Include="src\UserManagerAdapter.cpp" />
+	<ResourceCompile Include="src\UserManager.rc" />
+	<ClCompile Include="src\ClassicUi.cpp" />
+	<ClCompile Include="src\VersionStacks.cpp" />
+	<ClCompile Include="src\VersionStacksAdapter.cpp" />
+	<ClCompile Include="src\Notifications.cpp" />
+	<ClCompile Include="src\NotificationAdapter.cpp" />
+	<ClCompile Include="src\NotificationStore.cpp" />
+	<ClInclude Include="src\NotificationStore.h" />
+	<ClInclude Include="src\Notifications.h" />
+	<ClInclude Include="src\NotificationAdapter.h" />
+	<ClInclude Include="src\NotificationResources.h" />
+	<ResourceCompile Include="src\Notifications.rc" />
+	<ClInclude Include="src\VersionStacks.h" />
+	<ClInclude Include="src\VersionStacksAdapter.h" />
+	<ResourceCompile Include="src\Admin.rc" />
 	<ClInclude Include="src\QuickAccess.h" />
+	<ClInclude Include="src\Workflow.h" />
 	<None Include="src\QuickAccess.def" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CheckProjectWiseSdk" BeforeTargets="PrepareForBuild">
 	<Error Condition="'$(PWSDKDir)' == ''" Text="PWSDKDir is not set. Point it at the ProjectWise SDK root." />
-	<Error Condition="!Exists('$(PWSDKDir)\include\aawindms.h') or !Exists('$(PWSDKDir)\lib\Win32\dmawin.lib')" Text="The ProjectWise SDK must contain include\aawindms.h and lib\Win32\dmawin.lib. Explorer 23.06 uses an x86 module." />
+	<Error Condition="!Exists('$(PWSDKDir)\include\aawindms.h') or !Exists('$(PWSDKDir)\include\aaapi.h') or !Exists('$(PWSDKDir)\include\aadmsapi.h') or !Exists('$(PWSDKDir)\lib\Win32\dmawin.lib') or !Exists('$(PWSDKDir)\lib\Win32\dmscli.lib') or !Exists('$(PWSDKDir)\lib\Win32\dmsgen.lib')" Text="The ProjectWise SDK must contain include\aawindms.h, include\aadmsapi.h, include\aaapi.h and the Win32 dmawin.lib/dmscli.lib/dmsgen.lib libraries. Explorer 23.06 uses an x86 module." />
   </Target>
 </Project>

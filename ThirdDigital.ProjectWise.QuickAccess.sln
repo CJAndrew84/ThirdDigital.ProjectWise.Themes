@@ -2,9 +2,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
 VisualStudioVersion = 18.12.12405.243 stable
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AtkinsRealis.ProjectWise.QuickAccess", "AtkinsRealis.ProjectWise.QuickAccess\AtkinsRealis.ProjectWise.QuickAccess.vcxproj", "{0C602B71-7971-465F-BD44-7524E7372A91}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AtkinsRealis.ProjectWise.QuickAccess", "ThirdDigital.ProjectWise.QuickAccess\AtkinsRealis.ProjectWise.QuickAccess.vcxproj", "{0C602B71-7971-465F-BD44-7524E7372A91}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AtkinsRealis.ProjectWise.QuickAccess.Checks", "AtkinsRealis.ProjectWise.QuickAccess\Checks\AtkinsRealis.ProjectWise.QuickAccess.Checks.vcxproj", "{71EABAB1-CCBA-4662-BEEA-D7066C4A0BDE}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AtkinsRealis.ProjectWise.QuickAccess.Checks", "ThirdDigital.ProjectWise.QuickAccess\Checks\AtkinsRealis.ProjectWise.QuickAccess.Checks.vcxproj", "{71EABAB1-CCBA-4662-BEEA-D7066C4A0BDE}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

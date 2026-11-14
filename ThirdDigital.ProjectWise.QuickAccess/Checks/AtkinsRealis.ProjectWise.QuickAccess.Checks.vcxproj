@@ -25,6 +25,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup>
 	<ClCompile>
+	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
 	  <SDLCheck>true</SDLCheck>
 	  <PreprocessorDefinitions>WIN32;WIN32_LEAN_AND_MEAN;NOMINMAX;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
 	</ClCompile>
@@ -35,7 +36,21 @@
   </ItemDefinitionGroup>
   <ItemGroup>
 	<ClCompile Include="Checks.cpp" />
+	<ClCompile Include="VersionStacksChecks.cpp" />
+	<ClCompile Include="NotificationChecks.cpp" />
+	<ClCompile Include="UserManagerChecks.cpp" />
+	<ClCompile Include="..\src\UserManager.cpp" />
+	<ClCompile Include="..\src\UserManagerModel.cpp" />
+	<ResourceCompile Include="..\src\UserManager.rc" />
 	<ClCompile Include="..\src\QuickAccess.cpp" />
+	<ClCompile Include="..\src\Workflow.cpp" />
+	<ClCompile Include="..\src\Admin.cpp" />
+	<ClCompile Include="..\src\ClassicUi.cpp" />
+	<ClCompile Include="..\src\VersionStacks.cpp" />
+	<ClCompile Include="..\src\Notifications.cpp" />
+	<ClCompile Include="..\src\NotificationStore.cpp" />
+	<ResourceCompile Include="..\src\Notifications.rc" />
+	<ResourceCompile Include="..\src\Admin.rc" />
 	<Manifest Include="app.manifest" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
