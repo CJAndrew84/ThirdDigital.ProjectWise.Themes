@@ -414,10 +414,11 @@ namespace
 
 	bool SaveRibbonPreview(HWND window, const wchar_t* path)
 	{
-		RECT client{};
-		GetClientRect(window, &client);
-		const int width = client.right, height = client.bottom;
+		RECT bounds{};
+		GetWindowRect(window, &bounds);
+		const int width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
 		if (width <= 0 || height <= 0) return false;
+		RECT client{0, 0, width, height};
 		BITMAPINFO info{};
 		info.bmiHeader = {sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB};
 		void* pixels = nullptr;
@@ -432,7 +433,7 @@ namespace
 		const auto old = SelectObject(dc, bitmap);
 		SetDCBrushColor(dc, GetSysColor(COLOR_BTNFACE));
 		FillRect(dc, &client, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-		SendMessageW(window, WM_PRINT, reinterpret_cast<WPARAM>(dc), PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
+		SendMessageW(window, WM_PRINT, reinterpret_cast<WPARAM>(dc), PRF_NONCLIENT | PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
 		GdiFlush();
 		BITMAPFILEHEADER header{};
 		header.bfType = 0x4D42;
@@ -482,6 +483,23 @@ namespace
 		Expect(QueuedKey(toolbar, VK_RETURN) && host.executions == 1 && host.last == kShowAllVersions &&
 			SendMessageW(toolbar, TB_ISBUTTONCHECKED, command, 0), L"Enter toggles all versions on once and reflects the host state");
 		QueuedKey(toolbar, VK_RETURN, WM_KEYUP);
+		IAccessible* accessible = nullptr;
+		bool named = false, pressed = false;
+		if (SUCCEEDED(AccessibleObjectFromWindow(toolbar, static_cast<DWORD>(OBJID_CLIENT), IID_PPV_ARGS(&accessible))))
+		{
+			VARIANT child{};
+			child.vt = VT_I4;
+			child.lVal = static_cast<LONG>(kShowAllVersions) + 1;
+			BSTR name = nullptr;
+			named = SUCCEEDED(accessible->get_accName(child, &name)) && name != nullptr && wcscmp(name, L"Show all versions") == 0;
+			SysFreeString(name);
+			VARIANT state{};
+			pressed = SUCCEEDED(accessible->get_accState(child, &state)) && state.vt == VT_I4 &&
+				(state.lVal & (STATE_SYSTEM_CHECKED | STATE_SYSTEM_PRESSED)) != 0;
+			VariantClear(&state);
+			accessible->Release();
+		}
+		Expect(named && pressed, L"native accessibility exposes the complete version-toggle name and its on state");
 		if (previewPath != nullptr) Expect(SaveRibbonPreview(window, previewPath), L"native View version-toggle preview written");
 		Expect(QueuedKey(toolbar, VK_SPACE) && host.executions == 2 && !SendMessageW(toolbar, TB_ISBUTTONCHECKED, command, 0),
 			L"Space toggles all versions off once");
