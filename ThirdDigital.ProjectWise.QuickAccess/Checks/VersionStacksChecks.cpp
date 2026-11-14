@@ -56,8 +56,10 @@ namespace
 	struct FakeList
 	{
 		VS::Snapshot data = Fixture();
-		bool available = true, dirty = true, throwRead = false;
+		bool available = true, dirty = true, throwRead = false, changeDuringMenu = false;
+		HWND view = nullptr;
 		unsigned selections = 0, activations = 0, menus = 0, classics = 0, destroyed = 0;
+		unsigned rejectedMenus = 0;
 		std::vector<std::size_t> selected;
 		LONG openedSequence = -1;
 		static VS::ReadResult Read(void* context, VS::Snapshot& result, bool force)
@@ -95,7 +97,8 @@ namespace
 		static bool Menu(void* context, const VS::Snapshot& shown, POINT)
 		{
 			auto& self = *static_cast<FakeList*>(context);
-			if (!self.Matches(shown)) return false;
+			if (self.changeDuringMenu) { self.data.context = L"datasource changed during menu loop"; VS::Refresh(self.view, true); }
+			if (!self.Matches(shown)) { ++self.rejectedMenus; return false; }
 			++self.menus; return true;
 		}
 		static void Classic(void* context) { ++static_cast<FakeList*>(context)->classics; }
@@ -134,8 +137,11 @@ void CheckVersionStacks(const wchar_t* preview, void (*expect)(bool, const wchar
 		0, 0, 940, 540, nullptr, nullptr, instance, nullptr);
 	FakeList fake;
 	HWND view = VS::Create(frame, instance, fake.Callbacks());
+	fake.view = view;
 	Expect(view != nullptr, L"SDK-free version stacks use a real native report list view");
 	if (!view) { DestroyWindow(frame); return; }
+	HWND outside = CreateWindowExW(0, L"BUTTON", L"Outside the version view", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+		0, 482, 250, 30, frame, nullptr, instance, nullptr);
 	MoveWindow(view, 0, 0, 920, 480, TRUE); ShowWindow(frame, SW_SHOWNOACTIVATE); ShowWindow(view, SW_SHOWNOACTIVATE);
 	Expect(VS::Refresh(view, true), L"visible document-list snapshot initializes version stacks");
 	const HWND list = GetDlgItem(view, VS::kList);
@@ -143,6 +149,9 @@ void CheckVersionStacks(const wchar_t* preview, void (*expect)(bool, const wchar
 		L"native parent rows show the highest visible numeric sequence, including restricted visible history");
 	Expect(Text(list, 1, 1) == L"Drawing.dgn" && Text(list, 2, 1) == L"Drawing.dgn", L"same-name independent documents remain separate native rows");
 	Expect(Header_GetItemCount(ListView_GetHeader(list)) == 5, L"native columns are retained beside stack controls and numeric sequence");
+	RECT rowBounds{};
+	ListView_GetItemRect(list, 1, &rowBounds, LVIR_BOUNDS);
+	Expect(rowBounds.bottom - rowBounds.top >= MulDiv(24, static_cast<int>(GetDpiForWindow(view)), 96), L"stack expansion targets are at least 24 logical pixels high");
 	Expect(Accessible(list, CHILDID_SELF, false) == L"Document version stacks", L"the native version list has an explicit accessible name");
 	Expect(Accessible(list, 2, false).find(L"sequence 10") != std::wstring::npos && Accessible(list, 2, true).find(L"collapsed") != std::wstring::npos,
 		L"screen-reader row annotations identify sequence and collapsed visible-version count");
@@ -161,6 +170,13 @@ void CheckVersionStacks(const wchar_t* preview, void (*expect)(bool, const wchar
 	SendMessageW(list, WM_KEYDOWN, VK_LEFT, 0); Pump();
 	Expect(ListView_GetItemCount(list) == 4 && fake.selected == std::vector<std::size_t>({3}) && ListView_GetNextItem(list, -1, LVNI_FOCUSED) == 1,
 		L"collapsing selected history moves selection and focus to the visible parent");
+	ListView_GetItemRect(list, 1, &rowBounds, LVIR_BOUNDS);
+	SendMessageW(list, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(20, (rowBounds.top + rowBounds.bottom) / 2));
+	SendMessageW(list, WM_LBUTTONUP, 0, MAKELPARAM(20, (rowBounds.top + rowBounds.bottom) / 2)); Pump();
+	Expect(ListView_GetItemCount(list) == 6, L"clicking the Versions cell expands its parent without activating a document");
+	SendMessageW(list, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(20, (rowBounds.top + rowBounds.bottom) / 2));
+	SendMessageW(list, WM_LBUTTONUP, 0, MAKELPARAM(20, (rowBounds.top + rowBounds.bottom) / 2)); Pump();
+	Expect(ListView_GetItemCount(list) == 4 && fake.activations == 1, L"clicking the same expander collapses without a document action");
 	SendMessageW(GetDlgItem(view, VS::kExpand), BM_CLICK, 0, 0); Pump();
 	Expect(ListView_GetItemCount(list) == 7, L"Expand all exposes only the seven rows in the native visible snapshot");
 	ListView_SetItemState(list, 4, LVIS_SELECTED, LVIS_SELECTED); Pump();
@@ -170,6 +186,10 @@ void CheckVersionStacks(const wchar_t* preview, void (*expect)(bool, const wchar
 	Expect(ListView_GetItemCount(list) == 4 && fake.selected == std::vector<std::size_t>({2, 3}), L"Collapse all preserves visible selections from different families");
 	SendMessageW(list, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(list), MAKELPARAM(-1, -1));
 	Expect(fake.menus == 1, L"keyboard context menu delegates the validated visible selection to the host");
+	fake.changeDuringMenu = true;
+	SendMessageW(list, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(list), MAKELPARAM(-1, -1));
+	Expect(fake.menus == 1 && fake.rejectedMenus == 1, L"a nested refresh while a native menu is open cannot substitute a new datasource snapshot for its command");
+	fake.changeDuringMenu = false;
 	const unsigned before = fake.activations;
 	EnableWindow(frame, FALSE); SendMessageW(list, WM_KEYDOWN, VK_RETURN, 0);
 	SendMessageW(GetDlgItem(view, VS::kClassic), BM_CLICK, 0, 0);
@@ -189,8 +209,10 @@ void CheckVersionStacks(const wchar_t* preview, void (*expect)(bool, const wchar
 	fake.throwRead = true;
 	Expect(!VS::Refresh(view, true) && ListView_GetItemCount(list) == 0, L"a host read exception leaves an empty recoverable custom view");
 	fake.throwRead = false; VS::Refresh(view, true);
-	SendMessageW(GetDlgItem(view, VS::kExpand), WM_KEYDOWN, VK_TAB, 0);
-	Expect(GetFocus() != nullptr, L"native stack buttons retain keyboard focus traversal");
+	SetFocus(GetDlgItem(view, VS::kExpand)); SendMessageW(GetFocus(), WM_KEYDOWN, VK_TAB, 0);
+	Expect(GetFocus() == GetDlgItem(view, VS::kCollapse), L"Tab traverses the native stack controls in reading order");
+	SetFocus(list); SendMessageW(list, WM_KEYDOWN, VK_TAB, 0);
+	Expect(GetFocus() == outside, L"Tab leaves the stacked view for another native control without a keyboard trap");
 	DestroyWindow(view);
 	Expect(fake.destroyed == 1, L"closing a stacked view releases its host exactly once");
 	FakeList rejected;

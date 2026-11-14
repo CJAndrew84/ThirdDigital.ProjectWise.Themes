@@ -2,6 +2,7 @@
 
 #include <oleacc.h>
 #include <algorithm>
+#include <cstdlib>
 #include <map>
 #include <memory>
 
@@ -64,7 +65,7 @@ namespace QuickAccess::VersionStacks
 			HIMAGELIST images = nullptr, stateImages = nullptr;
 			IAccPropServices* accessibility = nullptr;
 			HFONT font = nullptr;
-			bool com = false, building = false, reading = false, ready = false;
+			bool com = false, building = false, reading = false, ready = false, syncQueued = false;
 			~State()
 			{
 				if (images) ImageList_Destroy(images);
@@ -82,6 +83,19 @@ namespace QuickAccess::VersionStacks
 			return data ? *data : StatePtr{};
 		}
 		int Scale(HWND window, int value) { return MulDiv(value, static_cast<int>(GetDpiForWindow(window)), 96); }
+		void UpdateFont(State& state)
+		{
+			NONCLIENTMETRICSW metrics{sizeof(metrics)};
+			SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, GetDpiForWindow(state.window));
+			// A larger native row font gives the entire expander cell at least a 24 logical-pixel height.
+			metrics.lfMessageFont.lfHeight = -std::max(std::abs(metrics.lfMessageFont.lfHeight), static_cast<LONG>(Scale(state.window, 18)));
+			const HFONT font = CreateFontIndirectW(&metrics.lfMessageFont);
+			if (!font) return;
+			for (HWND child = GetWindow(state.window, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT))
+				SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+			if (state.font) DeleteObject(state.font);
+			state.font = font;
+		}
 		void Annotate(State& state, HWND control, DWORD child, MSAAPROPID property, const std::wstring& value)
 		{
 			if (state.accessibility)
@@ -117,7 +131,10 @@ namespace QuickAccess::VersionStacks
 			std::vector<std::size_t> selected;
 			for (std::size_t i = 0; i < state.snapshot.rows.size(); ++i)
 				if (state.snapshot.rows[i].selected) selected.push_back(i);
-			const bool accepted = state.host.select && state.host.select(state.host.context, state.snapshot, selected, FocusedRow(state));
+			const Snapshot shown = state.snapshot;
+			const bool accepted = state.host.select && state.host.select(state.host.context, shown, selected, FocusedRow(state));
+			if (!IsWindow(state.window) || state.snapshot.context != shown.context || state.snapshot.rows.size() != shown.rows.size()) return false;
+			for (std::size_t i = 0; i < shown.rows.size(); ++i) if (state.snapshot.rows[i].identity != shown.rows[i].identity) return false;
 			if (!accepted) { state.ready = false; EnableWindow(state.list, FALSE); PostMessageW(state.window, kRetry, 0, 0); }
 			return accepted;
 		}
@@ -148,7 +165,8 @@ namespace QuickAccess::VersionStacks
 					LVITEMW cell{};
 					cell.mask = LVIF_TEXT | (c == 0 ? LVIF_IMAGE : 0);
 					cell.iItem = static_cast<int>(i); cell.iSubItem = static_cast<int>(c + 1);
-					cell.pszText = const_cast<LPWSTR>(row.cells[c].c_str()); cell.iImage = row.image;
+					std::wstring label = c == 0 && !entry.parent ? L"\x2003" + row.cells[c] : row.cells[c];
+					cell.pszText = label.data(); cell.iImage = row.image;
 					SendMessageW(state.list, LVM_SETITEMW, 0, reinterpret_cast<LPARAM>(&cell));
 				}
 				std::wstring sequence = row.groupable ? std::to_wstring(row.sequence) : L"";
@@ -205,7 +223,12 @@ namespace QuickAccess::VersionStacks
 		void Layout(State& state)
 		{
 			RECT bounds{}; GetClientRect(state.window, &bounds);
-			const int gap = Scale(state.window, 6), width = Scale(state.window, 112), height = Scale(state.window, 30);
+			HDC dc = GetDC(state.window);
+			const HGDIOBJ old = SelectObject(dc, state.font);
+			TEXTMETRICW metrics{}; GetTextMetricsW(dc, &metrics);
+			SIZE label{}; GetTextExtentPoint32W(dc, L"Collapse all", 12, &label);
+			const int gap = Scale(state.window, 6), width = std::max(Scale(state.window, 112), static_cast<int>(label.cx) + Scale(state.window, 24));
+			const int height = std::max(Scale(state.window, 30), static_cast<int>(metrics.tmHeight) + Scale(state.window, 8));
 			int x = gap, y = gap;
 			for (int id : {kExpand, kCollapse, kClassic})
 			{
@@ -213,7 +236,11 @@ namespace QuickAccess::VersionStacks
 				MoveWindow(GetDlgItem(state.window, id), x, y, width, height, TRUE); x += width + gap;
 			}
 			y += height + gap;
-			const int messageHeight = Scale(state.window, 40);
+			wchar_t message[1024]{}; GetWindowTextW(state.status, message, ARRAYSIZE(message));
+			RECT messageBounds{0, 0, std::max(1L, bounds.right - 2 * gap), 0};
+			DrawTextW(dc, message, -1, &messageBounds, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
+			SelectObject(dc, old); ReleaseDC(state.window, dc);
+			const int messageHeight = std::max(Scale(state.window, 40), static_cast<int>(messageBounds.bottom) + gap);
 			MoveWindow(state.status, gap, y, std::max(0L, bounds.right - 2 * gap), messageHeight, TRUE);
 			y += messageHeight;
 			MoveWindow(state.list, 0, y, bounds.right, std::max(0L, bounds.bottom - y), TRUE);
@@ -278,6 +305,7 @@ namespace QuickAccess::VersionStacks
 			EnableWindow(state.list, state.ready);
 			EnableWindow(GetDlgItem(state.window, kExpand), state.ready);
 			EnableWindow(GetDlgItem(state.window, kCollapse), state.ready);
+			Layout(state);
 		}
 		LRESULT CALLBACK ControlProc(HWND control, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR ref)
 		{
@@ -288,17 +316,23 @@ namespace QuickAccess::VersionStacks
 				if (message == WM_KEYDOWN && wParam == VK_TAB && GetKeyState(VK_CONTROL) >= 0 && GetKeyState(VK_MENU) >= 0)
 				{
 					const bool reverse = GetKeyState(VK_SHIFT) < 0;
-					const HWND nextNative = GetNextDlgTabItem(GetAncestor(state->window, GA_ROOT), control, reverse);
-					if (nextNative && nextNative != control && IsWindowEnabled(nextNative) && IsWindowVisible(nextNative))
-					{
-						SetFocus(nextNative); return 0;
-					}
 					const HWND controls[]{GetDlgItem(state->window, kExpand), GetDlgItem(state->window, kCollapse), GetDlgItem(state->window, kClassic), state->list};
 					for (int i = 0; i < 4; ++i) if (controls[i] == control)
 						for (int n = 1; n <= 4; ++n)
 						{
 							const int index = i + (reverse ? -n : n);
-							if (index < 0 || index >= 4) { SetFocus(GetParent(state->window)); return 0; }
+							if (index < 0 || index >= 4)
+							{
+								HWND next = control;
+								for (int step = 0; step < 256; ++step)
+								{
+									next = GetNextDlgTabItem(GetAncestor(state->window, GA_ROOT), next, reverse);
+									if (!next || next == control) break;
+									if (next != state->window && !IsChild(state->window, next) && IsWindowVisible(next) && IsWindowEnabled(next))
+									{ SetFocus(next); return 0; }
+								}
+								SetFocus(GetParent(state->window)); return 0;
+							}
 							const HWND next = controls[index];
 							if (IsWindowEnabled(next)) { SetFocus(next); return 0; }
 						}
@@ -310,7 +344,10 @@ namespace QuickAccess::VersionStacks
 					if (wParam == VK_RETURN)
 					{
 						if ((lParam & (1L << 30)) == 0 && Sync(*state) && state->host.activate)
-							state->host.activate(state->host.context, state->snapshot, FocusedRow(*state));
+						{
+							const Snapshot shown = state->snapshot;
+							state->host.activate(state->host.context, shown, FocusedRow(*state));
+						}
 						return 0;
 					}
 				}
@@ -338,7 +375,11 @@ namespace QuickAccess::VersionStacks
 				{
 					POINT point{static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))};
 					if (point.x == -1 && point.y == -1) { point = {Scale(control, 100), Scale(control, 40)}; ClientToScreen(control, &point); }
-					if (Sync(*state) && state->host.menu) state->host.menu(state->host.context, state->snapshot, point);
+					if (Sync(*state) && state->host.menu)
+					{
+						const Snapshot shown = state->snapshot;
+						state->host.menu(state->host.context, shown, point);
+					}
 					return 0;
 				}
 			}
@@ -362,9 +403,6 @@ namespace QuickAccess::VersionStacks
 				{
 					state->window = window;
 					const HINSTANCE instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window, GWLP_HINSTANCE));
-					NONCLIENTMETRICSW metrics{sizeof(metrics)};
-					SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0);
-					state->font = CreateFontIndirectW(&metrics.lfMessageFont);
 					for (const auto& button : {std::pair{kExpand, L"Expand all"}, {kCollapse, L"Collapse all"}, {kClassic, L"Classic list"}})
 					{
 						HWND child = CreateWindowExW(0, L"BUTTON", button.second, WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
@@ -386,6 +424,7 @@ namespace QuickAccess::VersionStacks
 					CoCreateInstance(CLSID_AccPropServices, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&state->accessibility));
 					Annotate(*state, state->list, CHILDID_SELF, PROPID_ACC_NAME, L"Document version stacks");
 					Annotate(*state, state->list, CHILDID_SELF, PROPID_ACC_DESCRIPTION, L"The parent is the highest sequence visible in this list. Right arrow expands; left arrow collapses. Only selected rows are used by document commands.");
+					UpdateFont(*state);
 					if (!SetTimer(window, 1, 500, nullptr)) return -1;
 					Layout(*state); return 0;
 				}
@@ -404,14 +443,21 @@ namespace QuickAccess::VersionStacks
 				case WM_NOTIFY:
 				{
 					const auto header = reinterpret_cast<NMHDR*>(lParam);
-					if (header->hwndFrom == state->list && header->code == LVN_ITEMCHANGED && !state->building)
-						PostMessageW(window, kSync, 0, 0);
+					if (header->hwndFrom == state->list && header->code == LVN_ITEMCHANGED && !state->building && !state->syncQueued)
+					{
+						state->syncQueued = true; PostMessageW(window, kSync, 0, 0);
+					}
 					if (header->hwndFrom == state->list && header->code == LVN_ITEMACTIVATE && Sync(*state) && state->host.activate)
-						state->host.activate(state->host.context, state->snapshot, FocusedRow(*state));
+					{
+						const Snapshot shown = state->snapshot;
+						state->host.activate(state->host.context, shown, FocusedRow(*state));
+					}
 					return 0;
 				}
-				case kSync: if (state->ready && !state->building) Sync(*state); return 0;
+				case kSync: state->syncQueued = false; if (state->ready && !state->building) Sync(*state); return 0;
 				case kRetry: Load(*state, true); return 0;
+				case WM_DPICHANGED_AFTERPARENT: case WM_SETTINGCHANGE:
+					UpdateFont(*state); Layout(*state); Load(*state, true); return 0;
 				case WM_SYSCOLORCHANGE: case WM_THEMECHANGED: Load(*state, true); InvalidateRect(window, nullptr, TRUE); return 0;
 				case WM_NCDESTROY:
 				{

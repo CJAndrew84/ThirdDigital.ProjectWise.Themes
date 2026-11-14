@@ -94,6 +94,16 @@ namespace
 
 	HWND NavigationList();
 	bool ExplorerControl(HWND control) noexcept;
+	HWND SelectionControl(HWND tree, HWND list) noexcept
+	{
+		const HWND stacked = QuickAccess::VersionStacksListFromFocus(GetFocus());
+		return stacked == list && ExplorerControl(stacked) ? stacked : QuickAccess::SelectionControl(g_frame, tree, list, g_selectionControl);
+	}
+	bool FocusSelection(HWND target) noexcept
+	{
+		if (!QuickAccess::FocusVersionStacks(target)) SetFocus(target);
+		return GetFocus() == target || IsChild(target, GetFocus()) || QuickAccess::VersionStacksListFromFocus(GetFocus()) == target;
+	}
 
 	bool ReadShowAllVersions(QuickAccess::ButtonState& state)
 	{
@@ -141,7 +151,7 @@ namespace
 		if (!IsWindow(g_frame) || !IsWindowEnabled(g_frame)) return false;
 		const HWND tree = aaApi_GetMainDscTree();
 		const HWND list = NavigationList();
-		const HWND control = QuickAccess::SelectionControl(g_frame, tree, list, g_selectionControl);
+		const HWND control = SelectionControl(tree, list);
 		if (control == nullptr) return false;
 		g_selectionControl = control;
 		HMENU menu = CreatePopupMenu();
@@ -218,6 +228,8 @@ namespace
 
 	HWND NavigationList()
 	{
+		const HWND stacked = QuickAccess::VersionStacksListFromFocus(GetFocus());
+		if (ExplorerControl(stacked)) return stacked;
 		const HWND active = aaApi_GetActiveDocumentList();
 		if (ExplorerControl(active)) return active;
 		const HWND main = aaApi_GetMainDocumentList();
@@ -320,8 +332,7 @@ namespace
 			{
 				const HWND list = NavigationList();
 				if (!ExplorerControl(list)) return false;
-				SetFocus(list);
-				if (GetFocus() != list && !IsChild(list, GetFocus())) return false;
+				if (!FocusSelection(list)) return false;
 				// autoSelect=TRUE lets the SDK apply the history item to its document-list controls.
 				const auto* item = button == 0 ? aaApi_DocListNavigatorMoveBack(list, TRUE, 1, nullptr) :
 					aaApi_DocListNavigatorMoveForward(list, TRUE, 1, nullptr);
@@ -363,9 +374,7 @@ namespace
 		if (button == QuickAccess::kShowAllVersions) return ToggleShowAllVersions();
 		if (button >= g_commands.size() || g_commands[button] == 0 || !IsWindowEnabled(g_frame)) return false;
 		if (!IsWindow(g_selectionControl)) return false;
-		SetFocus(g_selectionControl);
-		const HWND focus = GetFocus();
-		if (focus != g_selectionControl && !IsChild(g_selectionControl, focus))
+		if (!FocusSelection(g_selectionControl))
 		{
 			Report(L"could not restore the selection control for command dispatch");
 			return false;
@@ -530,7 +539,7 @@ namespace
 		selection.source = aaApi_GetActiveDatasource();
 		selection.folder = aaApi_DocListGetProject(selection.list);
 		if (selection.source == nullptr || selection.folder <= 0) return true;
-		selection.control = QuickAccess::SelectionControl(g_frame, aaApi_GetMainDscTree(), selection.list, g_selectionControl);
+		selection.control = SelectionControl(aaApi_GetMainDscTree(), selection.list);
 		if (selection.control == nullptr) return false;
 		const ULONGLONG now = GetTickCount64();
 		if (force || selection.source != g_workflowSource || selection.folder != g_workflowFolder || now - g_workflowChecked >= 5000)
@@ -606,8 +615,7 @@ namespace
 			QuickAccess::WorkflowState current;
 			if (!BuildWorkflow(current, selection, true) || !QuickAccess::CanInvokeWorkflow(shown, current, command) ||
 				selection.documents.empty() || selection.documents.size() > static_cast<std::size_t>(MAXLONG)) return false;
-			SetFocus(selection.list);
-			if (GetFocus() != selection.list && !IsChild(selection.list, GetFocus())) return false;
+			if (!FocusSelection(selection.list)) return false;
 			// Native document command dispatch preserves extension callbacks, WRE prompts and audit-comment dialogs.
 			const LONG_PTR outcome = aaApi_ExecuteDocumentCommand(command, static_cast<LONG>(selection.documents.size()), selection.documents.data());
 			g_workflowChecked = 0;
@@ -748,10 +756,9 @@ namespace
 		if (!IsWindow(g_frame) || GetWindowThreadProcessId(g_frame, nullptr) != GetCurrentThreadId()) return false;
 		g_window = QuickAccess::Create(g_frame, g_instance, {nullptr, RefreshGuarded, Execute, Search, CreateAddress, RefreshNavigation, Navigate,
 			[](void*) -> bool {
-				const HWND target = QuickAccess::SelectionControl(g_frame, aaApi_GetMainDscTree(), NavigationList(), g_selectionControl);
+				const HWND target = SelectionControl(aaApi_GetMainDscTree(), NavigationList());
 				if (target == nullptr) { Report(L"no Explorer selection control is available for keyboard focus"); return false; }
-				SetFocus(target);
-				return GetFocus() == target || IsChild(target, GetFocus());
+				return FocusSelection(target);
 			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow, RefreshSelectors, SelectChoice, RefreshAdmin, ExecuteAdmin, RestoreClassic, RibbonFailed});
 		g_creationFailed = g_window == nullptr;
 		if (g_window != nullptr && !QuickAccess::Dock(g_window, true))

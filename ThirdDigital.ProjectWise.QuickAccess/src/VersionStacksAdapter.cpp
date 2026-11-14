@@ -15,6 +15,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace QuickAccess
@@ -25,7 +26,7 @@ namespace QuickAccess
 		constexpr UINT kVisibility = WM_APP + 220;
 		constexpr ULONG kIdentityMask = AADOCITEM_PROJECTNO | AADOCITEM_DOCNO | AADOCITEM_SETNO | AADOCITEM_SETTYPE |
 			AADOCITEM_EXTRAROW | AADOCITEM_FLAGS | AADOCITEM_ACCESS | AADOCITEM_INDENT | AADOCITEM_DOCGUID | AADOCITEM_VERSIONSEQ;
-		constexpr int kMaxRows = 125000;
+		constexpr int kMaxRows = 20000;
 		struct Adapter;
 		HINSTANCE g_instance = nullptr;
 		bool g_available = false, g_enabled = true, g_registered = false;
@@ -53,6 +54,11 @@ namespace QuickAccess
 		{
 			HMENU value = CreatePopupMenu();
 			~Menu() { if (value) DestroyMenu(value); }
+		};
+		struct Moniker
+		{
+			HMONIKER value = nullptr;
+			~Moniker() { if (value) aaApi_DestroyMoniker(value); }
 		};
 		struct Metadata { LONG original = 0, sequence = 0; };
 		std::wstring CommandPath(HMENU menu, UINT command, const std::wstring& prefix = {})
@@ -114,7 +120,8 @@ namespace QuickAccess
 			}
 			std::wstring Context() const
 			{
-				if (!g_available || !g_enabled || !IsWindow(container) || !IsWindow(source) || !IsWindowEnabled(aaApi_GetMainFrameWindow())) return {};
+				const HWND frame = aaApi_GetMainFrameWindow();
+				if (!g_available || !g_enabled || !IsWindow(container) || !IsWindow(source) || !IsChild(frame, container) || !IsWindowEnabled(frame)) return {};
 				const HDSOURCE datasource = aaApi_DocumentListGetDatasource(container);
 				const LONG folder = aaApi_DocListGetProject(container), user = aaApi_GetCurrentUserId();
 				if (!datasource || datasource != aaApi_GetActiveDatasource() || folder <= 0 || user <= 0) return {};
@@ -154,6 +161,7 @@ namespace QuickAccess
 				const HWND header = ListView_GetHeader(source);
 				const int columns = header ? Header_GetItemCount(header) : 0;
 				if (count < 0 || count > kMaxRows || columns <= 0 || columns > 128) return VS::ReadResult::Unavailable;
+				if (count * columns > 250000) { fresh.message = L"This list is too large for Version stacks. Use Classic list."; return VS::ReadResult::Unavailable; }
 				if (!force && fresh.context == readContext && revision == readRevision) return VS::ReadResult::Unchanged;
 				const ULONGLONG observed = revision;
 				const LONG folder = aaApi_DocListGetProject(container);
@@ -162,7 +170,7 @@ namespace QuickAccess
 				for (int i = 0; i < count; ++i)
 				{
 					AADOCLIST_ITEM item{};
-					if (!Item(i, item) || item.lSetId != 0 || item.iExtraRow != 0 || item.iIndent != 0 ||
+					if (!Item(i, item) || item.lSetId != 0 || item.iExtraRow != 0 ||
 						(item.lDocumentId > 0 && item.lProjectId != folder)) return VS::ReadResult::Unavailable;
 					VS::Row row;
 					row.project = item.lProjectId; row.document = item.lDocumentId; row.sequence = item.versionSeq; row.sourceIndex = i;
@@ -179,7 +187,12 @@ namespace QuickAccess
 				if (fresh.context != metadataContext || identities != metadataIdentities || force)
 				{
 					std::map<LONG, Metadata> values;
-					if (!documents.empty())
+					const bool versions = std::any_of(fresh.rows.begin(), fresh.rows.end(), [](const auto& row) { return row.historical; });
+					if (!versions)
+					{
+						for (const auto& row : fresh.rows) if (row.groupable) values.emplace(row.document, Metadata{0, row.sequence});
+					}
+					else if (!documents.empty())
 					{
 						Buffer buffer{aaApi_SelectDocumentDataBufferByNameProp2(folder, nullptr, nullptr, nullptr, nullptr, AADMSDOCSELECT_FILTER_SHOW_VERSIONS)};
 						if (!buffer.value) return VS::ReadResult::Unavailable;
@@ -197,6 +210,7 @@ namespace QuickAccess
 					}
 					metadata = std::move(values); metadataContext = fresh.context; metadataIdentities = identities;
 				}
+				std::size_t characters = 0;
 				for (auto& row : fresh.rows)
 				{
 					if (row.groupable)
@@ -221,6 +235,8 @@ namespace QuickAccess
 							text.resize(text.size() * 2);
 						}
 						row.cells.emplace_back(text.data());
+						characters += row.cells.back().size();
+						if (characters > 8 * 1024 * 1024) { fresh.message = L"This list is too large for Version stacks. Use Classic list."; return VS::ReadResult::Unavailable; }
 					}
 				}
 				for (int c = 0; c < columns; ++c)
@@ -254,7 +270,7 @@ namespace QuickAccess
 					ListView_SetItemState(source, row.sourceIndex, desired, LVIS_SELECTED | LVIS_FOCUSED);
 				}
 				changingSelection = false;
-				return Validate(shown);
+				return ValidateSelection(shown);
 			}
 			bool BuildMenu(const VS::Snapshot& shown, Menu& owner, HMENU& commands, bool& documents)
 			{
@@ -266,14 +282,14 @@ namespace QuickAccess
 				return commands && aaApi_InitMenuByAaControl(container, commands,
 					AAMG_MODIFY | AAMG_WORKFLOW | AAMG_CUSTOMS | AAMG_PROPERTIES | AAMG_VIEW) != 0;
 			}
-			bool Dispatch(const VS::Snapshot& shown, UINT command, const std::wstring& expectedPath = {})
+			bool Dispatch(const VS::Snapshot& shown, UINT command, std::wstring_view expectedPath = {})
 			{
 				Menu menu; HMENU commands = nullptr; bool documents = false;
 				ButtonState state{};
 				if (!BuildMenu(shown, menu, commands, documents) || !ReadMenuState(commands, command, state) || !state.enabled) return false;
 				if (!expectedPath.empty() && CommandPath(commands, command) != expectedPath) return false;
-				SetFocus(container);
-				if (GetFocus() != container && !IsChild(container, GetFocus())) return false;
+				if (!FocusVersionStacks(container)) SetFocus(container);
+				if (GetFocus() != container && !IsChild(container, GetFocus()) && VersionStacksListFromFocus(GetFocus()) != container) return false;
 				if (!ValidateSelection(shown)) return false;
 				if (documents)
 				{
@@ -287,6 +303,17 @@ namespace QuickAccess
 				// Explorer's ordinary command routing handles selected folders and current-folder operations.
 				SendMessageW(aaApi_GetMainFrameWindow(), WM_COMMAND, MAKEWPARAM(command, 0), 0); ++revision;
 				return true;
+			}
+			bool OpenFolder(const VS::Snapshot& shown, std::size_t row)
+			{
+				if (row >= shown.rows.size() || shown.rows[row].document > 0 || !shown.rows[row].selected || !ValidateSelection(shown)) return false;
+				if (std::count_if(shown.rows.begin(), shown.rows.end(), [](const auto& item) { return item.selected; }) != 1) return false;
+				LONG folder = shown.rows[row].project;
+				Moniker moniker;
+				if (folder <= 0 || !aaApi_GetProjectMonikers(1, &folder, &moniker.value) || !moniker.value || !ValidateSelection(shown)) return false;
+				// Select through the native tree, keeping its list/address/history buddies synchronized.
+				const bool selected = aaApi_ExpandDscTreeItemByMoniker(aaApi_GetMainDscTree(), moniker.value) != FALSE;
+				++revision; return selected;
 			}
 		};
 
@@ -314,8 +341,9 @@ namespace QuickAccess
 		{
 			__try
 			{
-				return row < shown.rows.size() && shown.rows[row].selected &&
-					static_cast<Adapter*>(context)->Dispatch(shown, shown.rows[row].document > 0 ? IDMD_OPEN : IDM_OPEN);
+				if (row >= shown.rows.size() || !shown.rows[row].selected) return false;
+				return shown.rows[row].document > 0 ? static_cast<Adapter*>(context)->Dispatch(shown, IDMD_OPEN) :
+					static_cast<Adapter*>(context)->OpenFolder(shown, row);
 			}
 			__except (SdkException(GetExceptionCode())) { return false; }
 		}
@@ -324,7 +352,8 @@ namespace QuickAccess
 			auto& self = *static_cast<Adapter*>(context);
 			Menu owner; HMENU commands = nullptr; bool documents = false;
 			if (!self.BuildMenu(shown, owner, commands, documents)) return false;
-			const UINT command = TrackPopupMenuEx(commands, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y, self.view, nullptr);
+			// The SDK window must own menu draw/measure/update messages for native and extension menu items.
+			const UINT command = TrackPopupMenuEx(commands, TPM_RETURNCMD | TPM_RIGHTBUTTON, screen.x, screen.y, self.container, nullptr);
 			const auto path = CommandPath(commands, command);
 			return command == 0 || (!path.empty() && self.Dispatch(shown, command, path));
 		}
@@ -413,5 +442,23 @@ namespace QuickAccess
 	{
 		g_available = available;
 		Visibility();
+	}
+	HWND VersionStacksListFromFocus(HWND focus) noexcept
+	{
+		if (!g_available || !g_enabled || !IsWindow(focus)) return nullptr;
+		for (const auto* view : g_views)
+			if (IsWindowVisible(view->view) && (focus == view->view || IsChild(view->view, focus))) return view->container;
+		return nullptr;
+	}
+	bool FocusVersionStacks(HWND documentList) noexcept
+	{
+		if (!g_available || !g_enabled) return false;
+		for (const auto* candidate : g_views) if (candidate->container == documentList && IsWindowVisible(candidate->view))
+		{
+			const HWND view = candidate->view;
+			SetFocus(view);
+			return GetFocus() == view || IsChild(view, GetFocus());
+		}
+		return false;
 	}
 }
