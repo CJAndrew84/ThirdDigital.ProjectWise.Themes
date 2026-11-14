@@ -291,7 +291,8 @@ namespace QuickAccess
 				if (!FocusVersionStacks(container)) SetFocus(container);
 				if (GetFocus() != container && !IsChild(container, GetFocus()) && VersionStacksListFromFocus(GetFocus()) != container) return false;
 				if (!ValidateSelection(shown)) return false;
-				if (documents)
+				// Native list/view commands can appear inside the Document popup. Only document commands take a document array.
+				if (documents && aaApi_GetCommandType(static_cast<LONG>(command)) == AAMENU_DOCUMENT)
 				{
 					std::vector<AADOC_ITEM> items;
 					for (const auto& row : shown.rows) if (row.selected) items.push_back({row.project, row.document});
