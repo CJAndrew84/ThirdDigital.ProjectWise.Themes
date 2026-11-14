@@ -353,7 +353,12 @@ namespace QuickAccess
 
 		bool FocusContent(WindowState& state) noexcept
 		{
-			if (state.host.focusContent != nullptr) return state.host.focusContent(state.host.context);
+			if (state.host.focusContent != nullptr)
+			{
+				const HWND window = state.window;
+				try { return state.host.focusContent(state.host.context); }
+				catch (...) { RequestRecovery(window, L"ribbon host focus failed"); return false; }
+			}
 			const HWND target = IsWindow(state.lastContentFocus) && IsChild(state.owner, state.lastContentFocus) ? state.lastContentFocus : state.owner;
 			SetFocus(target);
 			return GetFocus() == target || IsChild(target, GetFocus());
@@ -1561,8 +1566,8 @@ namespace QuickAccess
 				{
 					const auto failed = state->host.failed;
 					void* context = state->host.context;
-					if (failed != nullptr) failed(context, reinterpret_cast<const wchar_t*>(lParam));
-					else DestroyWindow(window);
+					try { if (failed != nullptr) failed(context, reinterpret_cast<const wchar_t*>(lParam)); } catch (...) {}
+					if (IsWindow(window)) DestroyWindow(window);
 				}
 				return 0;
 			case WM_CLOSE:
@@ -1599,7 +1604,7 @@ namespace QuickAccess
 		LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
 		{
 			try { return WindowProcImpl(window, message, wParam, lParam); }
-			catch (...) { RequestRecovery(window, L"ribbon window handler failed"); return 0; }
+			catch (...) { RequestRecovery(window, L"ribbon window handler failed"); return message == WM_CREATE ? -1 : 0; }
 		}
 
 	}
@@ -1888,27 +1893,36 @@ namespace QuickAccess
 	bool Search(HWND window) noexcept
 	{
 		auto* state = State(window);
-		if (state == nullptr || state->busy || state->failurePending || state->tab != Tab::Search || state->mode == DisplayMode::Hidden ||
-			(state->mode == DisplayMode::Minimized && !state->popup) || !IsWindowEnabled(state->owner) || state->host.search == nullptr)
+		try
 		{
-			Trace(L"ribbon search is unavailable");
+
+			if (state == nullptr || state->busy || state->failurePending || state->tab != Tab::Search || state->mode == DisplayMode::Hidden ||
+				(state->mode == DisplayMode::Minimized && !state->popup) || !IsWindowEnabled(state->owner) || state->host.search == nullptr)
+			{
+				Trace(L"ribbon search is unavailable");
+				return false;
+			}
+			wchar_t text[1025]{};
+			GetWindowTextW(state->searchText, text, ARRAYSIZE(text));
+			wchar_t* query = text;
+			while (iswspace(*query)) ++query;
+			if (*query == L'\0') { Trace(L"enter a search term before starting a search"); return false; }
+			state->busy = true;
+			States states{};
+			const bool available = state->host.refresh(state->host.context, states);
+			if (State(window) != state) return false;
+			const bool result = available && state->host.search(state->host.context, query);
+			if (State(window) != state) return result;
+			state->busy = false;
+			DismissPopup(window);
+			if (!result) Trace(L"ProjectWise search failed");
+			return result;
+		}
+		catch (...)
+		{
+			if (State(window) == state && state != nullptr) { state->busy = false; RequestRecovery(window, L"ribbon host search failed"); }
 			return false;
 		}
-		wchar_t text[1025]{};
-		GetWindowTextW(state->searchText, text, ARRAYSIZE(text));
-		wchar_t* query = text;
-		while (iswspace(*query)) ++query;
-		if (*query == L'\0') { Trace(L"enter a search term before starting a search"); return false; }
-		state->busy = true;
-		States states{};
-		const bool available = state->host.refresh(state->host.context, states);
-		if (State(window) != state) return false;
-		const bool result = available && state->host.search(state->host.context, query);
-		if (State(window) != state) return result;
-		state->busy = false;
-		DismissPopup(window);
-		if (!result) Trace(L"ProjectWise search failed");
-		return result;
 	}
 
 	bool ReadMenuState(HMENU menu, UINT command, ButtonState& state) noexcept
@@ -2044,125 +2058,151 @@ namespace QuickAccess
 	void Refresh(HWND window) noexcept
 	{
 		auto* state = State(window);
-		if (state == nullptr || state->busy || state->failurePending) return;
-		const HWND focusBefore = GetFocus();
-		state->busy = true;
-		States states{};
-		const bool available = IsWindowEnabled(state->owner) && state->host.refresh(state->host.context, states);
-		if (State(window) != state) return;
-		for (std::size_t i = 0; i < states.size(); ++i)
+		try
 		{
-			SendMessageW(state->toolbar, TB_ENABLEBUTTON, kFirstButton + i, MAKELPARAM(available && states[i].enabled, 0));
-			SendMessageW(state->toolbar, TB_CHECKBUTTON, kFirstButton + i, MAKELPARAM(available && states[i].checked, 0));
-		}
-		EnableWindow(state->searchText, available && state->host.search != nullptr);
-		EnableWindow(state->searchButton, available && state->host.search != nullptr);
-		if (state->navigation != nullptr)
-		{
-			NavigationStates navigation{};
-			const bool ready = IsWindowEnabled(state->owner) && state->host.refreshNavigation != nullptr &&
-				state->host.refreshNavigation(state->host.context, state->address, navigation);
+
+			if (state == nullptr || state->busy || state->failurePending) return;
+			const HWND focusBefore = GetFocus();
+			state->busy = true;
+			States states{};
+			const bool available = IsWindowEnabled(state->owner) && state->host.refresh(state->host.context, states);
 			if (State(window) != state) return;
-			for (std::size_t i = 0; i < navigation.size(); ++i)
-				EnableWindow(state->navigationButtons[i], ready && navigation[i].enabled && state->host.navigate != nullptr);
-			const bool addressReady = state->host.refreshAddress != nullptr ? IsWindowEnabled(state->owner) &&
-				state->host.refreshAddress(state->host.context, state->address) : ready;
-			if (State(window) != state) return;
-			EnableWindow(state->address, addressReady);
-		}
-		for (const Tab tab : {Tab::Workflow, Tab::Admin})
-		{
-			const auto query = tab == Tab::Admin ? state->host.refreshAdmin : state->host.refreshWorkflow;
-			if (query == nullptr) continue;
-			try
+			for (std::size_t i = 0; i < states.size(); ++i)
 			{
-				ContextState context;
-				const bool ready = IsWindowEnabled(state->owner) && query(state->host.context, context);
-				if (State(window) != state) return;
-				if (!ready) context = {};
-				if (!UpdateContext(*state, tab, std::move(context))) ResetContext(*state, tab);
+				SendMessageW(state->toolbar, TB_ENABLEBUTTON, kFirstButton + i, MAKELPARAM(available && states[i].enabled, 0));
+				SendMessageW(state->toolbar, TB_CHECKBUTTON, kFirstButton + i, MAKELPARAM(available && states[i].checked, 0));
 			}
-			catch (...)
+			EnableWindow(state->searchText, available && state->host.search != nullptr);
+			EnableWindow(state->searchButton, available && state->host.search != nullptr);
+			if (state->navigation != nullptr)
 			{
+				NavigationStates navigation{};
+				const bool ready = IsWindowEnabled(state->owner) && state->host.refreshNavigation != nullptr &&
+					state->host.refreshNavigation(state->host.context, state->address, navigation);
 				if (State(window) != state) return;
-				ResetContext(*state, tab);
+				for (std::size_t i = 0; i < navigation.size(); ++i)
+					EnableWindow(state->navigationButtons[i], ready && navigation[i].enabled && state->host.navigate != nullptr);
+				const bool addressReady = state->host.refreshAddress != nullptr ? IsWindowEnabled(state->owner) &&
+					state->host.refreshAddress(state->host.context, state->address) : ready;
+				if (State(window) != state) return;
+				EnableWindow(state->address, addressReady);
+			}
+			for (const Tab tab : {Tab::Workflow, Tab::Admin})
+			{
+				const auto query = tab == Tab::Admin ? state->host.refreshAdmin : state->host.refreshWorkflow;
+				if (query == nullptr) continue;
+				try
+				{
+					ContextState context;
+					const bool ready = IsWindowEnabled(state->owner) && query(state->host.context, context);
+					if (State(window) != state) return;
+					if (!ready) context = {};
+					if (!UpdateContext(*state, tab, std::move(context))) ResetContext(*state, tab);
+				}
+				catch (...)
+				{
+					if (State(window) != state) return;
+					ResetContext(*state, tab);
+				}
+			}
+			if (HasSelectors(*state))
+			{
+				try
+				{
+					SelectorStates selectors;
+					const bool force = state->forceSelectors;
+					state->forceSelectors = false;
+					const bool ready = IsWindowEnabled(state->owner) && state->host.refreshSelectors(state->host.context, selectors, force);
+					if (State(window) != state) return;
+					if (!ready) selectors = {};
+					UpdateSelectors(*state, std::move(selectors));
+				}
+				catch (...)
+				{
+					if (State(window) != state) return;
+					state->selectorStates = {};
+					for (const HWND combo : state->selectors) { SendMessageW(combo, CB_RESETCONTENT, 0, 0); EnableWindow(combo, FALSE); }
+					Trace(L"could not refresh Interface and View selectors");
+				}
+			}
+			state->busy = false;
+			if (GetFocus() == state->toolbar && (state->focusedCommand < 0 ||
+				SendMessageW(state->toolbar, TB_ISBUTTONENABLED, kFirstButton + state->focusedCommand, 0) == 0))
+			{
+				if (!FocusControl(*state, state->toolbar)) FocusControl(*state, state->tabs);
+			}
+			else if (focusBefore != nullptr && IsChild(window, focusBefore) &&
+				(!IsWindowEnabled(focusBefore) || !IsWindowVisible(focusBefore)))
+			{
+				if (!FocusControl(*state, state->tabs)) FocusContent(*state);
 			}
 		}
-		if (HasSelectors(*state))
+		catch (...)
 		{
-			try
-			{
-				SelectorStates selectors;
-				const bool force = state->forceSelectors;
-				state->forceSelectors = false;
-				const bool ready = IsWindowEnabled(state->owner) && state->host.refreshSelectors(state->host.context, selectors, force);
-				if (State(window) != state) return;
-				if (!ready) selectors = {};
-				UpdateSelectors(*state, std::move(selectors));
-			}
-			catch (...)
-			{
-				if (State(window) != state) return;
-				state->selectorStates = {};
-				for (const HWND combo : state->selectors) { SendMessageW(combo, CB_RESETCONTENT, 0, 0); EnableWindow(combo, FALSE); }
-				Trace(L"could not refresh Interface and View selectors");
-			}
-		}
-		state->busy = false;
-		if (GetFocus() == state->toolbar && (state->focusedCommand < 0 ||
-			SendMessageW(state->toolbar, TB_ISBUTTONENABLED, kFirstButton + state->focusedCommand, 0) == 0))
-		{
-			if (!FocusControl(*state, state->toolbar)) FocusControl(*state, state->tabs);
-		}
-		else if (focusBefore != nullptr && IsChild(window, focusBefore) &&
-			(!IsWindowEnabled(focusBefore) || !IsWindowVisible(focusBefore)))
-		{
-			if (!FocusControl(*state, state->tabs)) FocusContent(*state);
+			if (State(window) == state && state != nullptr) { state->busy = false; RequestRecovery(window, L"ribbon host refresh failed"); }
 		}
 	}
 
 	bool Navigate(HWND window, UINT buttonId) noexcept
 	{
 		auto* state = State(window);
-		if (state == nullptr || state->busy || state->failurePending || state->address == nullptr || state->host.refreshNavigation == nullptr ||
-			state->host.navigate == nullptr || buttonId < kFirstNavigation || buttonId >= kFirstNavigation + kNavigationCount ||
-			!IsWindowEnabled(state->owner))
+		try
 		{
-			Trace(L"navigation is unavailable");
+
+			if (state == nullptr || state->busy || state->failurePending || state->address == nullptr || state->host.refreshNavigation == nullptr ||
+				state->host.navigate == nullptr || buttonId < kFirstNavigation || buttonId >= kFirstNavigation + kNavigationCount ||
+				!IsWindowEnabled(state->owner))
+			{
+				Trace(L"navigation is unavailable");
+				return false;
+			}
+			DismissPopup(window);
+			state->busy = true;
+			NavigationStates states{};
+			const bool ready = state->host.refreshNavigation(state->host.context, state->address, states);
+			if (State(window) != state) return false;
+			const auto index = buttonId - kFirstNavigation;
+			const bool result = ready && states[index].enabled && state->host.navigate(state->host.context, index);
+			if (State(window) != state) return result;
+			state->busy = false;
+			if (!result) Trace(L"navigation command unavailable or failed");
+			Refresh(window);
+			return result;
+		}
+		catch (...)
+		{
+			if (State(window) == state && state != nullptr) { state->busy = false; RequestRecovery(window, L"ribbon host navigate failed"); }
 			return false;
 		}
-		DismissPopup(window);
-		state->busy = true;
-		NavigationStates states{};
-		const bool ready = state->host.refreshNavigation(state->host.context, state->address, states);
-		if (State(window) != state) return false;
-		const auto index = buttonId - kFirstNavigation;
-		const bool result = ready && states[index].enabled && state->host.navigate(state->host.context, index);
-		if (State(window) != state) return result;
-		state->busy = false;
-		if (!result) Trace(L"navigation command unavailable or failed");
-		Refresh(window);
-		return result;
 	}
 
 	bool Invoke(HWND window, UINT buttonId) noexcept
 	{
 		auto* state = State(window);
-		if (state == nullptr || state->busy || state->failurePending || buttonId < kFirstButton || buttonId >= kFirstButton + kButtonCount) return false;
-		if (state->mode == DisplayMode::Hidden || (state->mode == DisplayMode::Minimized && !state->popup) ||
-			!ButtonOnPage(*state, buttonId - kFirstButton)) return false;
-		state->busy = true;
-		States states{};
-		const auto button = buttonId - kFirstButton;
-		const bool available = IsWindowEnabled(state->owner) && state->host.refresh(state->host.context, states);
-		if (State(window) != state) return false;
-		const bool executed = available && states[button].enabled && state->host.execute(state->host.context, button);
-		if (State(window) != state) return executed;
-		if (!executed) Trace(L"command unavailable or dispatch failed");
-		state->busy = false;
-		DismissPopup(window);
-		Refresh(window);
-		return executed;
+		try
+		{
+
+			if (state == nullptr || state->busy || state->failurePending || buttonId < kFirstButton || buttonId >= kFirstButton + kButtonCount) return false;
+			if (state->mode == DisplayMode::Hidden || (state->mode == DisplayMode::Minimized && !state->popup) ||
+				!ButtonOnPage(*state, buttonId - kFirstButton)) return false;
+			state->busy = true;
+			States states{};
+			const auto button = buttonId - kFirstButton;
+			const bool available = IsWindowEnabled(state->owner) && state->host.refresh(state->host.context, states);
+			if (State(window) != state) return false;
+			const bool executed = available && states[button].enabled && state->host.execute(state->host.context, button);
+			if (State(window) != state) return executed;
+			if (!executed) Trace(L"command unavailable or dispatch failed");
+			state->busy = false;
+			DismissPopup(window);
+			Refresh(window);
+			return executed;
+		}
+		catch (...)
+		{
+			if (State(window) == state && state != nullptr) { state->busy = false; RequestRecovery(window, L"ribbon host invoke failed"); }
+			return false;
+		}
 	}
 
 	bool InvokeContext(HWND window, Tab tab, UINT buttonId) noexcept

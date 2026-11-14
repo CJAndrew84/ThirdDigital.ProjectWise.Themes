@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <commctrl.h>
+#include <aaapi.h>
 #include <aadmsapi.h>
 #include <aawindms.h>
 #include <delayimp.h>
@@ -872,6 +873,11 @@ namespace
 		Report(L"module initialised");
 		return true;
 	}
+	bool InitialiseGuarded()
+	{
+		try { return Initialise(); }
+		catch (...) { RecoverClassic(L"ribbon initialization failed; Classic UI retained"); return false; }
+	}
 }
 
 BOOL APIENTRY DllMain(HMODULE instance, DWORD reason, LPVOID)
@@ -901,7 +907,7 @@ extern "C" LONG WINAPI CustomInitialize(ULONG applicationMask, LPVOID)
 	}
 	__try
 	{
-		Initialise();
+		InitialiseGuarded();
 	}
 	__except (SdkLoadExceptionFilter(GetExceptionCode()))
 	{

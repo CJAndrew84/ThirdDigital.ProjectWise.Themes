@@ -65,10 +65,12 @@ namespace
 		unsigned adminExecutions = 0, recoveries = 0, classicSelections = 0;
 		UINT lastAdmin = 0;
 		HWND recoveryWindow = nullptr, destroyOnAdminRefresh = nullptr;
+		bool throwOnRefresh = false, throwOnExecute = false, throwOnCreateAddress = false;
 
 		static bool Refresh(void* context, QuickAccess::States& result)
 		{
 			auto& host = *static_cast<FakeHost*>(context);
+			if (host.throwOnRefresh) throw 1;
 			result = host.states;
 			if (host.destroyOnRefresh != nullptr)
 			{
@@ -82,6 +84,7 @@ namespace
 		static bool Execute(void* context, std::size_t button)
 		{
 			auto& host = *static_cast<FakeHost*>(context);
+			if (host.throwOnExecute) throw 1;
 			++host.executions;
 			host.last = button;
 			if (button == QuickAccess::kShowAllVersions && host.executeSucceeds)
@@ -110,8 +113,9 @@ namespace
 			return host.searchSucceeds;
 		}
 
-		static HWND CreateAddress(void*, HWND parent)
+		static HWND CreateAddress(void* context, HWND parent)
 		{
+			if (static_cast<FakeHost*>(context)->throwOnCreateAddress) throw 1;
 			return CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWN | CBS_AUTOHSCROLL,
 				0, 0, 400, 240, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
 		}
@@ -756,6 +760,17 @@ namespace
 		DestroyWindow(content);
 		window = Create(owner, GetModuleHandleW(nullptr), callbacks); host.destroyOnAdminRefresh = window;
 		Refresh(window); Expect(!IsWindow(window), L"destruction during administrative-context refresh is safe");
+		host.throwOnRefresh = true;
+		window = Create(owner, GetModuleHandleW(nullptr), callbacks); host.recoveryWindow = window;
+		Expect(window != nullptr && !IsHealthy(window), L"a throwing host refresh is contained instead of terminating Explorer");
+		while (PeekMessageW(&message, window, WM_APP, WM_APP + 200, PM_REMOVE)) DispatchMessageW(&message);
+		Expect(!IsWindow(window), L"a contained host refresh exception reaches Classic recovery");
+		host.throwOnRefresh = false; host.states[2] = {true, false};
+		window = Create(owner, GetModuleHandleW(nullptr), callbacks); host.recoveryWindow = window; host.throwOnExecute = true;
+		Expect(!Invoke(window, kFirstButton + 2) && !IsHealthy(window), L"a throwing command is contained and schedules Classic recovery");
+		while (PeekMessageW(&message, window, WM_APP, WM_APP + 200, PM_REMOVE)) DispatchMessageW(&message);
+		host.throwOnExecute = false; host.throwOnCreateAddress = true; callbacks.createAddress = FakeHost::CreateAddress;
+		Expect(Create(owner, GetModuleHandleW(nullptr), callbacks) == nullptr && IsWindowEnabled(owner), L"a throwing creation callback leaves the host UI usable");
 	}
 
 	struct DialogFixture { HWND owner = nullptr; unsigned calls = 0, ticks = 0; bool cancel = false; };

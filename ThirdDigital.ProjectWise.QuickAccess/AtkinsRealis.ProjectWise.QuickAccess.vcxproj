@@ -33,9 +33,9 @@
 	<Link>
 	  <SubSystem>Windows</SubSystem>
 	  <ModuleDefinitionFile>src\QuickAccess.def</ModuleDefinitionFile>
-	  <AdditionalDependencies>comctl32.lib;shell32.lib;dmawin.lib;dmscli.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+	  <AdditionalDependencies>comctl32.lib;shell32.lib;dmawin.lib;dmscli.lib;dmsgen.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
 	  <AdditionalLibraryDirectories>$(PWSDKDir)\lib\Win32;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-	  <DelayLoadDLLs>dmawin.dll;dmscli.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+	  <DelayLoadDLLs>dmawin.dll;dmscli.dll;dmsgen.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
 	  <GenerateDebugInformation>true</GenerateDebugInformation>
 	</Link>
   </ItemDefinitionGroup>
@@ -53,6 +53,6 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CheckProjectWiseSdk" BeforeTargets="PrepareForBuild">
 	<Error Condition="'$(PWSDKDir)' == ''" Text="PWSDKDir is not set. Point it at the ProjectWise SDK root." />
-	<Error Condition="!Exists('$(PWSDKDir)\include\aawindms.h') or !Exists('$(PWSDKDir)\include\aadmsapi.h') or !Exists('$(PWSDKDir)\lib\Win32\dmawin.lib') or !Exists('$(PWSDKDir)\lib\Win32\dmscli.lib')" Text="The ProjectWise SDK must contain include\aawindms.h, include\aadmsapi.h and the Win32 dmawin.lib/dmscli.lib libraries. Explorer 23.06 uses an x86 module." />
+	<Error Condition="!Exists('$(PWSDKDir)\include\aawindms.h') or !Exists('$(PWSDKDir)\include\aaapi.h') or !Exists('$(PWSDKDir)\include\aadmsapi.h') or !Exists('$(PWSDKDir)\lib\Win32\dmawin.lib') or !Exists('$(PWSDKDir)\lib\Win32\dmscli.lib') or !Exists('$(PWSDKDir)\lib\Win32\dmsgen.lib')" Text="The ProjectWise SDK must contain include\aawindms.h, include\aadmsapi.h, include\aaapi.h and the Win32 dmawin.lib/dmscli.lib/dmsgen.lib libraries. Explorer 23.06 uses an x86 module." />
   </Target>
 </Project>
