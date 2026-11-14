@@ -38,6 +38,10 @@
 	<ClCompile Include="Checks.cpp" />
 	<ClCompile Include="VersionStacksChecks.cpp" />
 	<ClCompile Include="NotificationChecks.cpp" />
+	<ClCompile Include="UserManagerChecks.cpp" />
+	<ClCompile Include="..\src\UserManager.cpp" />
+	<ClCompile Include="..\src\UserManagerModel.cpp" />
+	<ResourceCompile Include="..\src\UserManager.rc" />
 	<ClCompile Include="..\src\QuickAccess.cpp" />
 	<ClCompile Include="..\src\Workflow.cpp" />
 	<ClCompile Include="..\src\Admin.cpp" />

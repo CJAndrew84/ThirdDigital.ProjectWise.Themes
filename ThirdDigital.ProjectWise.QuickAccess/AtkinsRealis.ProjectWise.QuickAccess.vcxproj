@@ -44,6 +44,10 @@
 	<ClCompile Include="src\QuickAccess.cpp" />
 	<ClCompile Include="src\Workflow.cpp" />
 	<ClCompile Include="src\Admin.cpp" />
+	<ClCompile Include="src\UserManager.cpp" />
+	<ClCompile Include="src\UserManagerModel.cpp" />
+	<ClCompile Include="src\UserManagerAdapter.cpp" />
+	<ResourceCompile Include="src\UserManager.rc" />
 	<ClCompile Include="src\ClassicUi.cpp" />
 	<ClCompile Include="src\VersionStacks.cpp" />
 	<ClCompile Include="src\VersionStacksAdapter.cpp" />

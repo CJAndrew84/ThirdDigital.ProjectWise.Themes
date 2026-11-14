@@ -13,6 +13,7 @@
 #include <vector>
 #include <algorithm>
 
+void CheckUserManager(HWND owner, const wchar_t* preview, void (*expect)(bool, const wchar_t*), bool (*save)(HWND, const wchar_t*));
 void CheckVersionStacks(const wchar_t* preview, void (*expect)(bool, const wchar_t*), bool (*save)(HWND, const wchar_t*));
 void CheckNotifications(HWND owner, const wchar_t* preview, void (*expect)(bool, const wchar_t*), bool (*save)(HWND, const wchar_t*));
 
@@ -1945,6 +1946,7 @@ int wmain(int argc, wchar_t* argv[])
 	CheckSelectors(owner, argc >= 9 && wcscmp(argv[7], L"--selectors-preview") == 0 ? argv[8] : nullptr);
 	CheckAdminAndRecovery(owner, argc >= 11 && wcscmp(argv[9], L"--admin-preview") == 0 ? argv[10] : nullptr);
 	CheckProjectAdmin(owner, argc >= 21 && wcscmp(argv[19], L"--project-admin-preview") == 0 ? argv[20] : nullptr);
+	CheckUserManager(owner, argc >= 23 && wcscmp(argv[21], L"--user-manager-preview") == 0 ? argv[22] : nullptr, Expect, SaveRibbonPreview);
 	CheckUserDialog(owner, argc >= 17 && wcscmp(argv[15], L"--new-user-preview") == 0 ? argv[16] : nullptr,
 		argc >= 19 && wcscmp(argv[17], L"--logical-user-preview") == 0 ? argv[18] : nullptr);
 	CheckClassicRestoration();

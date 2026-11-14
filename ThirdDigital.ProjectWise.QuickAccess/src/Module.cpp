@@ -10,12 +10,14 @@
 #include "ClassicUi.h"
 #include "VersionStacksAdapter.h"
 #include "NotificationAdapter.h"
+#include "UserManagerAdapter.h"
 
 #include <array>
 #include <cwchar>
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <new>
 
 namespace
 {
@@ -729,6 +731,12 @@ namespace
 		if (connection.token != nullptr && *connection.token) flags |= AALOGIN_SILENT;
 		HWND parent = GetLastActivePopup(g_frame);
 		if (!IsWindow(parent)) parent = g_frame;
+		for (int depth = 0; depth < 16; ++depth)
+		{
+			const HWND popup = GetLastActivePopup(parent);
+			if (!IsWindow(popup) || popup == parent) break;
+			parent = popup;
+		}
 		aaApi_RemoveLastError();
 		const LONG_PTR result = LoginAdmin(parent, flags, datasource, ARRAYSIZE(datasource), connection.username, connection.token);
 		if (result == IDCANCEL) return QuickAccess::AdminAccess::Cancelled;
@@ -845,7 +853,13 @@ namespace
 		__try { return IsWindowEnabled(g_frame) && RefreshProjectAdminImpl(result); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
 	}
-	struct ProjectUserScope { QuickAccess::ContextState shown; };
+	struct UserCreationScope
+	{
+		const QuickAccess::ContextState* project = nullptr;
+		void* context = nullptr;
+		bool (*validate)(void*, std::wstring&) = nullptr;
+		LONG* created = nullptr;
+	};
 	bool RefreshAdminImpl(QuickAccess::ContextState& result)
 	{
 		try { return BuildAdmin(result); }
@@ -856,19 +870,20 @@ namespace
 		__try { return IsWindowEnabled(g_frame) && RefreshAdminImpl(result); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
 	}
-	bool CreateUserImpl(const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error, const ProjectUserScope* scope)
+	bool CreateUserImpl(const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error, const UserCreationScope* scope)
 	{
 		try
 		{
 			QuickAccess::ContextState current;
 			if (!QuickAccess::ValidateNewUser(user, error)) return false;
 			if (EnsureCurrentAdmin(shown, static_cast<UINT>(QuickAccess::AdminCommand::NewUser), current, error) != QuickAccess::AdminAccess::Ready) return false;
-			if (scope != nullptr)
+			if (scope != nullptr && scope->project != nullptr)
 			{
 				QuickAccess::ContextState projectContext; LONG project = 0;
-				if (!BuildProjectAdmin(projectContext, project, true) || !QuickAccess::CanInvokeWorkflow(scope->shown, projectContext, static_cast<UINT>(QuickAccess::ProjectAdminCommand::NewUser)))
+				if (!BuildProjectAdmin(projectContext, project, true) || !QuickAccess::CanInvokeWorkflow(*scope->project, projectContext, static_cast<UINT>(QuickAccess::ProjectAdminCommand::NewUser)))
 				{ error = L"The project or Project Admin membership changed. Reopen New User."; return false; }
 			}
+			if (scope != nullptr && scope->validate != nullptr && !scope->validate(scope->context, error)) return false;
 			LONG id = 0;
 			// The server remains authoritative for Restricted Administrator Users-node permissions and uniqueness.
 			// The public single-identity compatibility call also sets the chosen type and credentials.
@@ -886,13 +901,14 @@ namespace
 				const LPCWSTR nativeDetail = aaApi_GetLastErrorDetail();
 				error = QuickAccess::UserCreationError(code, message, nativeDetail ? nativeDetail : L""); return false;
 			}
+			if (scope != nullptr && scope->created != nullptr) *scope->created = id;
 			return true;
 		}
 		catch (...) { error = L"The account could not be created."; return false; }
 	}
 	bool CreateUser(void* scope, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
 	{
-		__try { return CreateUserImpl(shown, user, error, static_cast<const ProjectUserScope*>(scope)); }
+		__try { return CreateUserImpl(shown, user, error, static_cast<const UserCreationScope*>(scope)); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { error = L"The SDK user-creation dependency is unavailable in this Explorer installation."; return false; }
 	}
 	bool ExecuteAdminImpl(const QuickAccess::ContextState& shown, UINT command)
@@ -926,6 +942,63 @@ namespace
 		__try { return IsWindowEnabled(g_frame) && ExecuteAdminImpl(shown, command); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
 	}
+	struct ManagerContext { HDSOURCE source; LONG actor; };
+	bool ManagerEligible(void* context, bool fresh, std::wstring& error)
+	{
+		const auto& expected = *static_cast<ManagerContext*>(context);
+		if (!IsWindow(g_frame) || expected.source != aaApi_GetActiveDatasource() || expected.actor != aaApi_GetCurrentUserId())
+		{ error = L"Activate the original datasource and user, then Refresh."; return false; }
+		QuickAccess::ContextState current; LONG project = 0;
+		if (!BuildProjectAdmin(current, project, fresh) || !current.visible)
+		{ error = L"Project Admin userlist membership is no longer available."; return false; }
+		return true;
+	}
+	bool ManagerPrepare(void* context, std::wstring& error)
+	{
+		if (!ManagerEligible(context, true, error)) return false;
+		QuickAccess::ContextState shown, ready;
+		if (!BuildAdmin(shown)) { error = L"The current administrative context is unavailable."; return false; }
+		if (shown.visible && EnsureCurrentAdmin(shown, static_cast<UINT>(QuickAccess::AdminCommand::Users), ready, error) != QuickAccess::AdminAccess::Ready) return false;
+		return ManagerEligible(context, true, error);
+	}
+	bool ManagerCanCreate(void* context)
+	{
+		const auto& expected = *static_cast<ManagerContext*>(context);
+		QuickAccess::ContextState current;
+		return expected.source == aaApi_GetActiveDatasource() && expected.actor == aaApi_GetCurrentUserId() && BuildAdmin(current) && current.visible;
+	}
+	bool ManagerCreationAllowed(void* context, std::wstring& error) { return ManagerEligible(context, true, error); }
+	struct ManagerCreation
+	{
+		UserCreationScope scope;
+		LONG id = 0;
+		QuickAccess::UserManagement::User* result = nullptr;
+	};
+	bool CreateManagerUserImpl(void* context, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	{
+		auto& creation = *static_cast<ManagerCreation*>(context);
+		if (!CreateUserImpl(shown, user, error, &creation.scope)) return false;
+		*creation.result = {creation.id, user.name, user.description, user.email}; return true;
+	}
+	bool CreateManagerUser(void* context, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	{
+		__try { return CreateManagerUserImpl(context, shown, user, error); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { error = L"The SDK user-creation dependency is unavailable."; return false; }
+	}
+	bool ManagerCreate(void* context, HWND parent, QuickAccess::UserManagement::User& result, std::wstring& error)
+	{
+		if (!ManagerEligible(context, true, error)) return false;
+		QuickAccess::ContextState shown, ready;
+		if (!BuildAdmin(shown) || !shown.visible) { error = L"Creating datasource accounts requires datasource administrative rights."; return false; }
+		if (EnsureCurrentAdmin(shown, static_cast<UINT>(QuickAccess::AdminCommand::NewUser), ready, error) != QuickAccess::AdminAccess::Ready) return false;
+		wchar_t datasource[1024]{}; if (!aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource))) return false;
+		ManagerCreation creation; creation.result = &result; creation.scope = {nullptr, context, ManagerCreationAllowed, &creation.id};
+		const INT_PTR outcome = QuickAccess::ShowNewUserDialog(parent, g_instance, ready, datasource, &creation, CreateManagerUser);
+		if (outcome != IDOK) { error = L"Account creation was cancelled. Pending membership changes are retained."; return false; }
+		if (result.id <= 0) { error = L"The account was created but its identifier was not returned. Refresh users before trying again."; return false; }
+		return true;
+	}
+	void DestroyManagerContext(void* context) { delete static_cast<ManagerContext*>(context); }
 	bool ExecuteProjectAdminImpl(const QuickAccess::ContextState& shown, UINT command)
 	{
 		try
@@ -951,11 +1024,20 @@ namespace
 				{
 					if (!ready.visible) return false;
 					wchar_t name[1024]{}; if (!aaApi_GetActiveDatasourceName(name, ARRAYSIZE(name))) return false;
-					ProjectUserScope scope{current};
+					UserCreationScope scope{&current};
 					result = QuickAccess::ShowNewUserDialog(g_frame, g_instance, ready, name, &scope, CreateUser); break;
 				}
 			case QuickAccess::ProjectAdminCommand::Members:
-				result = aaApi_UserManagementDlg(g_frame, nullptr); break;
+				{
+					auto* context = new (std::nothrow) ManagerContext{aaApi_GetActiveDatasource(), aaApi_GetCurrentUserId()};
+					if (context != nullptr)
+					{
+						const QuickAccess::UserManagerServices services{context, ManagerEligible, ManagerPrepare, ManagerCanCreate, ManagerCreate, DestroyManagerContext};
+						if (QuickAccess::OpenProjectUserManager(g_frame, g_instance, project, services) != nullptr) return true;
+					}
+					// Preserve access to the standard tool if the optional floating window cannot be created.
+					result = aaApi_UserManagementDlg(g_frame, nullptr); break;
+				}
 			case QuickAccess::ProjectAdminCommand::Properties:
 				if (project <= 0) return false;
 				result = aaApi_ProjectPropertyDlg2(g_frame, nullptr, 0, project); break;
