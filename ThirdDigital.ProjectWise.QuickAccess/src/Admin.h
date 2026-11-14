@@ -28,6 +28,13 @@ namespace QuickAccess
 		AdminAccess (*login)(void*, const ContextState&, std::wstring& error) = nullptr;
 	};
 	AdminAccess EnsureAdminSession(const AdminSessionHost& host, const ContextState& shown, UINT command, ContextState& ready, std::wstring& error);
+	enum class ProjectAdminCommand : UINT { NewUser = 1, Members = 2, Properties = 3, Access = 4 };
+	enum class RoleMemberKind : LONG { User = 1, Group = 2, UserList = 3 };
+	struct RoleList { LONG id = 0; std::wstring name; };
+	bool IsProjectAdminList(const std::wstring& name) noexcept;
+	using ReadRoleParents = bool (*)(void*, RoleMemberKind, LONG member, std::vector<RoleList>& parents);
+	RoleList FindProjectAdminRole(LONG user, const std::vector<LONG>& groups, void* context, ReadRoleParents read);
+	ContextState ProjectAdminContext(std::wstring context, const std::wstring& role, bool canCreateUsers, bool hasProject, const std::wstring& projectName);
 	bool ValidateNewUser(const NewUser& user, std::wstring& error, int* invalidControl = nullptr);
 	std::wstring UserCreationError(LONG code, const std::wstring& message, const std::wstring& detail);
 	using CreateUserCallback = bool (*)(void*, const ContextState&, const NewUser&, std::wstring& error);

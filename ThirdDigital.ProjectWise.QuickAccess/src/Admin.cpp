@@ -51,6 +51,52 @@ namespace QuickAccess
 	}
 	NewUser::~NewUser() { ClearCredentials(); }
 
+	bool IsProjectAdminList(const std::wstring& name) noexcept
+	{
+		constexpr wchar_t suffix[] = L"-Project Administrator";
+		constexpr std::size_t suffixLength = sizeof(suffix) / sizeof(wchar_t) - 1;
+		if (name.empty() || name.size() > 1024 || std::any_of(name.begin(), name.end(), [](wchar_t c) { return iswcntrl(c) != 0; })) return false;
+		return CompareStringOrdinal(name.c_str(), static_cast<int>(name.size()), L"*BA", 3, TRUE) == CSTR_EQUAL ||
+			(name.size() >= suffixLength && CompareStringOrdinal(name.data() + name.size() - suffixLength, static_cast<int>(suffixLength), suffix, static_cast<int>(suffixLength), TRUE) == CSTR_EQUAL);
+	}
+	RoleList FindProjectAdminRole(LONG user, const std::vector<LONG>& groups, void* context, ReadRoleParents read)
+	{
+		if (user <= 0 || groups.size() > 256 || read == nullptr) return {};
+		using Member = std::pair<RoleMemberKind, LONG>;
+		std::vector<Member> pending{{RoleMemberKind::User, user}}, visited;
+		for (LONG group : groups) if (group > 0) pending.emplace_back(RoleMemberKind::Group, group);
+		std::size_t records = 0;
+		for (std::size_t cursor = 0; cursor < pending.size() && visited.size() < 256; ++cursor)
+		{
+			const Member member = pending[cursor];
+			if (std::find(visited.begin(), visited.end(), member) != visited.end()) continue;
+			visited.push_back(member);
+			std::vector<RoleList> parents;
+			if (!read(context, member.first, member.second, parents)) continue;
+			if (parents.size() > 4096 - records) return {};
+			records += parents.size();
+			for (const auto& parent : parents)
+			{
+				if (parent.id <= 0) continue;
+				if (IsProjectAdminList(parent.name)) return parent;
+				pending.emplace_back(RoleMemberKind::UserList, parent.id);
+			}
+		}
+		return {};
+	}
+	ContextState ProjectAdminContext(std::wstring context, const std::wstring& role, bool canCreateUsers, bool hasProject, const std::wstring& projectName)
+	{
+		if (context.empty() || !IsProjectAdminList(role)) return {};
+		ContextState result{true, false, std::move(context), {
+			{static_cast<UINT>(ProjectAdminCommand::NewUser), L"New User", canCreateUsers, ContextActionKind::NewUser},
+			{static_cast<UINT>(ProjectAdminCommand::Members), L"Users and Lists", true, ContextActionKind::Users},
+			{static_cast<UINT>(ProjectAdminCommand::Properties), L"Project Properties", hasProject, ContextActionKind::ProjectProperties},
+			{static_cast<UINT>(ProjectAdminCommand::Access), L"Project Access", hasProject, ContextActionKind::ProjectAccess}}};
+		result.status = hasProject ? L"Project: " + projectName : L"Select a work area to use project tools.";
+		if (!canCreateUsers) result.status += L" New User requires datasource administrative rights.";
+		return result;
+	}
+
 	bool ValidateNewUser(const NewUser& user, std::wstring& error, int* invalidControl)
 	{
 		if (invalidControl != nullptr) *invalidControl = 0;

@@ -747,6 +747,105 @@ namespace
 	{
 		return QuickAccess::EnsureAdminSession({nullptr, ReadAdminSession, LoginAdminSession}, shown, command, ready, error);
 	}
+	struct RoleReadContext { HDSOURCE source; LONG user; };
+	bool ReadRoleParents(void* context, QuickAccess::RoleMemberKind kind, LONG member, std::vector<QuickAccess::RoleList>& parents)
+	{
+		parents.clear();
+		const auto& expected = *static_cast<RoleReadContext*>(context);
+		if (expected.source != aaApi_GetActiveDatasource() || expected.user != aaApi_GetCurrentUserId()) return false;
+		static_assert(static_cast<LONG>(QuickAccess::RoleMemberKind::User) == AADMS_MGRTYPE_USER &&
+			static_cast<LONG>(QuickAccess::RoleMemberKind::Group) == AADMS_MGRTYPE_GROUP &&
+			static_cast<LONG>(QuickAccess::RoleMemberKind::UserList) == AADMS_MGRTYPE_USERLIST);
+		// Security roles use global access lists, rather than user-created private address books.
+		OwnedBuffer buffer{aaApi_SelectUserListDataBufferByMembers(AADMSUSRLST_ACCE, 0, static_cast<LONG>(kind), member)};
+		if (buffer.value != nullptr)
+		{
+			const LONG count = aaApi_DmsDataBufferGetCount(buffer.value);
+			if (count < 0 || count > 4096) return false;
+			for (LONG i = 0; i < count; ++i)
+			{
+				const LONG id = aaApi_DmsDataBufferGetNumericProperty(buffer.value, USRLST_PROP_ID, i);
+				const LPCWSTR name = aaApi_DmsDataBufferGetStringProperty(buffer.value, USRLST_PROP_NAME, i);
+				if (id > 0 && name != nullptr) parents.push_back({id, name});
+			}
+		}
+		return expected.source == aaApi_GetActiveDatasource() && expected.user == aaApi_GetCurrentUserId();
+	}
+	bool BuildProjectAdmin(QuickAccess::ContextState& result, LONG& project, bool force = false)
+	{
+		result = {}; project = 0;
+		const HDSOURCE source = aaApi_GetActiveDatasource(); const LONG user = aaApi_GetCurrentUserId();
+		if (source == nullptr || user <= 0) return true;
+		struct Errors
+		{
+			LONG_PTR bookmark = aaApi_AddErrorStackBookmark();
+			~Errors() { if (bookmark >= 0) aaApi_RemoveErrorStackBookmark(bookmark); }
+		} errors;
+		if (errors.bookmark < 0) return false;
+		wchar_t datasource[1024]{};
+		if (!aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource))) return false;
+		const std::wstring identity = std::to_wstring(reinterpret_cast<UINT_PTR>(source)) + L"/" + std::to_wstring(user) + L"/" + datasource;
+		static std::wstring cachedIdentity;
+		static QuickAccess::RoleList cachedRole;
+		static ULONGLONG checked = 0;
+		const auto now = GetTickCount64();
+		if (force || cachedIdentity != identity || now - checked >= 30000)
+		{
+			cachedRole = {}; cachedIdentity.clear();
+			std::vector<LONG> groups;
+			OwnedBuffer memberships{aaApi_SelectGroupDataBufferByUser(user)};
+			if (memberships.value != nullptr)
+			{
+				const LONG count = aaApi_DmsDataBufferGetCount(memberships.value);
+				if (count < 0 || count > 256) return false;
+				for (LONG i = 0; i < count; ++i) groups.push_back(aaApi_DmsDataBufferGetNumericProperty(memberships.value, GROUP_PROP_ID, i));
+			}
+			RoleReadContext context{source, user};
+			const auto role = QuickAccess::FindProjectAdminRole(user, groups, &context, ReadRoleParents);
+			if (source != aaApi_GetActiveDatasource() || user != aaApi_GetCurrentUserId()) return false;
+			cachedRole = role; cachedIdentity = identity; checked = now;
+		}
+		if (cachedRole.id <= 0) return true;
+		const HWND list = NavigationList();
+		const LONG folder = ExplorerControl(list) ? aaApi_DocListGetProject(list) : 0;
+		static std::wstring projectKey, projectName;
+		static LONG projectId = 0;
+		static ULONGLONG projectChecked = 0;
+		const auto key = identity + L"/" + std::to_wstring(folder);
+		if (force || projectKey != key || now - projectChecked >= 5000)
+		{
+			projectId = 0; projectName.clear();
+			if (folder > 0)
+			{
+				OwnedBuffer workArea{aaApi_SelectRichProjectOfFolder(folder)};
+				if (workArea.value && aaApi_DmsDataBufferGetCount(workArea.value) == 1)
+				{
+					projectId = aaApi_DmsDataBufferGetNumericProperty(workArea.value, PROJ_PROP_ID, 0);
+					const LPCWSTR name = aaApi_DmsDataBufferGetStringProperty(workArea.value, PROJ_PROP_NAME, 0);
+					if (projectId > 0 && name != nullptr && *name) projectName = name;
+					else projectId = 0;
+				}
+			}
+			projectKey = key; projectChecked = now;
+		}
+		const bool canCreate = aaApi_IsCurrentUserAdmin() || aaApi_IsUserRestrictedAdmin(0);
+		project = projectId;
+		result = QuickAccess::ProjectAdminContext(identity + L"/" + std::to_wstring(project) + L"/" + std::to_wstring(canCreate),
+			cachedRole.name, canCreate, project > 0, projectName);
+		return source == aaApi_GetActiveDatasource() && user == aaApi_GetCurrentUserId() && list == NavigationList() &&
+			(!ExplorerControl(list) || folder == aaApi_DocListGetProject(list));
+	}
+	bool RefreshProjectAdminImpl(QuickAccess::ContextState& result)
+	{
+		try { LONG project = 0; return BuildProjectAdmin(result, project); }
+		catch (...) { Report(L"could not read project administration context"); return false; }
+	}
+	bool RefreshProjectAdmin(void*, QuickAccess::ContextState& result)
+	{
+		__try { return IsWindowEnabled(g_frame) && RefreshProjectAdminImpl(result); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+	}
+	struct ProjectUserScope { QuickAccess::ContextState shown; };
 	bool RefreshAdminImpl(QuickAccess::ContextState& result)
 	{
 		try { return BuildAdmin(result); }
@@ -757,13 +856,19 @@ namespace
 		__try { return IsWindowEnabled(g_frame) && RefreshAdminImpl(result); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
 	}
-	bool CreateUserImpl(const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	bool CreateUserImpl(const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error, const ProjectUserScope* scope)
 	{
 		try
 		{
 			QuickAccess::ContextState current;
 			if (!QuickAccess::ValidateNewUser(user, error)) return false;
 			if (EnsureCurrentAdmin(shown, static_cast<UINT>(QuickAccess::AdminCommand::NewUser), current, error) != QuickAccess::AdminAccess::Ready) return false;
+			if (scope != nullptr)
+			{
+				QuickAccess::ContextState projectContext; LONG project = 0;
+				if (!BuildProjectAdmin(projectContext, project, true) || !QuickAccess::CanInvokeWorkflow(scope->shown, projectContext, static_cast<UINT>(QuickAccess::ProjectAdminCommand::NewUser)))
+				{ error = L"The project or Project Admin membership changed. Reopen New User."; return false; }
+			}
 			LONG id = 0;
 			// The server remains authoritative for Restricted Administrator Users-node permissions and uniqueness.
 			// The public single-identity compatibility call also sets the chosen type and credentials.
@@ -785,9 +890,9 @@ namespace
 		}
 		catch (...) { error = L"The account could not be created."; return false; }
 	}
-	bool CreateUser(void*, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
+	bool CreateUser(void* scope, const QuickAccess::ContextState& shown, const QuickAccess::NewUser& user, std::wstring& error)
 	{
-		__try { return CreateUserImpl(shown, user, error); }
+		__try { return CreateUserImpl(shown, user, error, static_cast<const ProjectUserScope*>(scope)); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { error = L"The SDK user-creation dependency is unavailable in this Explorer installation."; return false; }
 	}
 	bool ExecuteAdminImpl(const QuickAccess::ContextState& shown, UINT command)
@@ -819,6 +924,53 @@ namespace
 	bool ExecuteAdmin(void*, const QuickAccess::ContextState& shown, UINT command)
 	{
 		__try { return IsWindowEnabled(g_frame) && ExecuteAdminImpl(shown, command); }
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+	}
+	bool ExecuteProjectAdminImpl(const QuickAccess::ContextState& shown, UINT command)
+	{
+		try
+		{
+			QuickAccess::ContextState current; LONG project = 0;
+			if (!BuildProjectAdmin(current, project, true) || !QuickAccess::CanInvokeWorkflow(shown, current, command)) return false;
+			QuickAccess::ContextState datasource, ready;
+			if (!BuildAdmin(datasource)) return false;
+			if (datasource.visible)
+			{
+				std::wstring error;
+				const auto access = EnsureCurrentAdmin(datasource, static_cast<UINT>(command == static_cast<UINT>(QuickAccess::ProjectAdminCommand::NewUser) ?
+					QuickAccess::AdminCommand::NewUser : QuickAccess::AdminCommand::Users), ready, error);
+				if (access == QuickAccess::AdminAccess::Cancelled) return true;
+				if (access != QuickAccess::AdminAccess::Ready)
+				{ MessageBoxW(g_frame, error.c_str(), L"Project administration", MB_OK | MB_ICONINFORMATION); return false; }
+				if (!BuildProjectAdmin(current, project, true) || !QuickAccess::CanInvokeWorkflow(shown, current, command)) return false;
+			}
+			LONG_PTR result = IDABORT;
+			switch (static_cast<QuickAccess::ProjectAdminCommand>(command))
+			{
+			case QuickAccess::ProjectAdminCommand::NewUser:
+				{
+					if (!ready.visible) return false;
+					wchar_t name[1024]{}; if (!aaApi_GetActiveDatasourceName(name, ARRAYSIZE(name))) return false;
+					ProjectUserScope scope{current};
+					result = QuickAccess::ShowNewUserDialog(g_frame, g_instance, ready, name, &scope, CreateUser); break;
+				}
+			case QuickAccess::ProjectAdminCommand::Members:
+				result = aaApi_UserManagementDlg(g_frame, nullptr); break;
+			case QuickAccess::ProjectAdminCommand::Properties:
+				if (project <= 0) return false;
+				result = aaApi_ProjectPropertyDlg2(g_frame, nullptr, 0, project); break;
+			case QuickAccess::ProjectAdminCommand::Access:
+				if (project <= 0) return false;
+				result = aaApi_ProjectAccessDlg(g_frame, nullptr, project); break;
+			default: return false;
+			}
+			return result == IDOK || result == IDCANCEL;
+		}
+		catch (...) { Report(L"project administration action failed"); return false; }
+	}
+	bool ExecuteProjectAdmin(void*, const QuickAccess::ContextState& shown, UINT command)
+	{
+		__try { return IsWindowEnabled(g_frame) && ExecuteProjectAdminImpl(shown, command); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
 	}
 
@@ -863,7 +1015,8 @@ namespace
 				const HWND target = SelectionControl(aaApi_GetMainDscTree(), NavigationList());
 				if (target == nullptr) { Report(L"no Explorer selection control is available for keyboard focus"); return false; }
 				return FocusSelection(target);
-			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow, RefreshSelectors, SelectChoice, RefreshAdmin, ExecuteAdmin, RestoreClassic, RibbonFailed});
+			}, RefreshAddress, RefreshWorkflow, ExecuteWorkflow, RefreshSelectors, SelectChoice, RefreshAdmin, ExecuteAdmin, RestoreClassic, RibbonFailed,
+			RefreshProjectAdmin, ExecuteProjectAdmin});
 		g_creationFailed = g_window == nullptr;
 		if (g_window != nullptr && !QuickAccess::Dock(g_window, true))
 		{

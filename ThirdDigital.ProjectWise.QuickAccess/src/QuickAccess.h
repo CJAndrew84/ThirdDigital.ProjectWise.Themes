@@ -23,9 +23,10 @@ namespace QuickAccess
 	constexpr UINT kFirstNavigation = 210;
 	constexpr std::size_t kNavigationCount = 3;
 	constexpr UINT kFirstAdmin = 1200;
+	constexpr UINT kFirstProjectAdmin = 1400;
 	constexpr UINT kClassic = 230;
 
-	enum class Tab { Home, View, Search, Tools, Workflow, Admin };
+	enum class Tab { Home, View, Search, Tools, Workflow, Admin, ProjectAdmin };
 	enum class DisplayMode { Expanded, Minimized, Hidden };
 	Tab ButtonTab(std::size_t button) noexcept;
 
@@ -74,6 +75,8 @@ namespace QuickAccess
 		bool (*executeAdmin)(void* context, const ContextState& shown, UINT command) = nullptr;
 		bool (*restoreClassic)(void* context) = nullptr;
 		void (*failed)(void* context, const wchar_t* reason) = nullptr;
+		bool (*refreshProjectAdmin)(void* context, ContextState& admin) = nullptr;
+		bool (*executeProjectAdmin)(void* context, const ContextState& shown, UINT command) = nullptr;
 	};
 
 	bool ReadMenuState(HMENU menu, UINT command, ButtonState& state) noexcept;
@@ -97,6 +100,7 @@ namespace QuickAccess
 	bool Invoke(HWND window, UINT buttonId) noexcept;
 	bool InvokeWorkflow(HWND window, UINT buttonId) noexcept;
 	bool InvokeAdmin(HWND window, UINT buttonId) noexcept;
+	bool InvokeProjectAdmin(HWND window, UINT buttonId) noexcept;
 	bool IsHealthy(HWND window) noexcept;
 	bool SelectChoice(HWND window, Selector selector, std::size_t choice) noexcept;
 }

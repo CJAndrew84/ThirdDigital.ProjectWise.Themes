@@ -6,7 +6,7 @@
 
 namespace QuickAccess
 {
-	enum class WorkflowActionKind { Next, Previous, Change, Operation, NewUser, Users };
+	enum class WorkflowActionKind { Next, Previous, Change, Operation, NewUser, Users, ProjectProperties, ProjectAccess };
 	struct WorkflowAction
 	{
 		UINT command = 0;

@@ -67,6 +67,10 @@ namespace
 		bool adminAvailable = true;
 		unsigned adminExecutions = 0, recoveries = 0, classicSelections = 0;
 		UINT lastAdmin = 0;
+		QuickAccess::ContextState projectAdmin;
+		unsigned projectAdminExecutions = 0;
+		UINT lastProjectAdmin = 0;
+		HWND destroyOnProjectAdminRefresh = nullptr;
 		HWND recoveryWindow = nullptr, destroyOnAdminRefresh = nullptr;
 		bool throwOnRefresh = false, throwOnExecute = false, throwOnCreateAddress = false;
 
@@ -233,6 +237,19 @@ namespace
 			auto& host = *static_cast<FakeHost*>(context);
 			if (!QuickAccess::CanInvokeWorkflow(shown, host.admin, command)) return false;
 			++host.adminExecutions; host.lastAdmin = command; return true;
+		}
+		static bool RefreshProjectAdmin(void* context, QuickAccess::ContextState& result)
+		{
+			auto& host = *static_cast<FakeHost*>(context); result = host.projectAdmin;
+			if (host.destroyOnProjectAdminRefresh != nullptr)
+			{ HWND window = host.destroyOnProjectAdminRefresh; host.destroyOnProjectAdminRefresh = nullptr; DestroyWindow(window); }
+			return true;
+		}
+		static bool ExecuteProjectAdmin(void* context, const QuickAccess::ContextState& shown, UINT command)
+		{
+			auto& host = *static_cast<FakeHost*>(context);
+			if (!QuickAccess::CanInvokeWorkflow(shown, host.projectAdmin, command)) return false;
+			++host.projectAdminExecutions; host.lastProjectAdmin = command; return true;
 		}
 		static bool RestoreClassic(void* context)
 		{
@@ -880,6 +897,103 @@ namespace
 		while (PeekMessageW(&message, window, WM_APP, WM_APP + 200, PM_REMOVE)) DispatchMessageW(&message);
 		host.throwOnExecute = false; host.throwOnCreateAddress = true; callbacks.createAddress = FakeHost::CreateAddress;
 		Expect(Create(owner, GetModuleHandleW(nullptr), callbacks) == nullptr && IsWindowEnabled(owner), L"a throwing creation callback leaves the host UI usable");
+	}
+
+	struct RoleFixture
+	{
+		struct Edge { QuickAccess::RoleMemberKind kind; LONG id; std::vector<QuickAccess::RoleList> parents; };
+		std::vector<Edge> edges;
+		unsigned calls = 0;
+		bool fail = false, chain = false, oversized = false;
+		static bool Read(void* context, QuickAccess::RoleMemberKind kind, LONG id, std::vector<QuickAccess::RoleList>& result)
+		{
+			auto& fixture = *static_cast<RoleFixture*>(context); ++fixture.calls;
+			if (fixture.fail) return false;
+			if (fixture.chain) { result = {{id + 1, L"Ordinary team"}}; return true; }
+			if (fixture.oversized) { result.resize(4097); return true; }
+			const auto found = std::find_if(fixture.edges.begin(), fixture.edges.end(), [&](const auto& edge) { return edge.kind == kind && edge.id == id; });
+			result = found == fixture.edges.end() ? std::vector<QuickAccess::RoleList>{} : found->parents; return true;
+		}
+	};
+	void CheckProjectAdmin(HWND owner, const wchar_t* preview)
+	{
+		using namespace QuickAccess;
+		for (const auto* name : {L"*BA", L"*ba", L"12345-Project Administrator", L"Different.Project-Project Administrator", L"ANY-project administrator"})
+			Expect(IsProjectAdminList(name), L"project role names match the literal BA list or wildcard project-prefix suffix");
+		for (const auto* name : {L"BA", L"ABCBA", L"ABC*BA", L"*BA-extra", L"12345-Project Administrator-extra", L"12345Project Administrator", L"12345-Project Administrator ", L"*BA\n"})
+			Expect(!IsProjectAdminList(name), L"nearby names and trailing text cannot qualify as a project administration userlist");
+		RoleFixture roles;
+		roles.edges = {{RoleMemberKind::User, 10, {{20, L"*BA"}}}};
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 20, L"direct user membership qualifies for Project Admin");
+		Expect(FindProjectAdminRole(11, {}, &roles, RoleFixture::Read).id == 0, L"another user's membership does not qualify the current user");
+		roles.edges = {{RoleMemberKind::Group, 7, {{30, L"A-Project Administrator"}}}};
+		Expect(FindProjectAdminRole(10, {7}, &roles, RoleFixture::Read).id == 30, L"membership through a user group qualifies for Project Admin");
+		roles.edges = {{RoleMemberKind::User, 10, {{21, L"Team"}}}, {RoleMemberKind::UserList, 21, {{22, L"Nested team"}}},
+			{RoleMemberKind::UserList, 22, {{21, L"Team"}, {30, L"B-Project Administrator"}}}};
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 30, L"nested userlists are resolved and cycles do not hide a valid role path");
+		roles.fail = true;
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 0, L"unreadable membership cannot grant Project Admin");
+		roles = {}; roles.chain = true;
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 0 && roles.calls == 256, L"unbounded membership chains stop at the query limit");
+		roles = {}; roles.oversized = true;
+		Expect(FindProjectAdminRole(10, {}, &roles, RoleFixture::Read).id == 0, L"oversized membership results fail without granting a role");
+		Expect(!ProjectAdminContext(L"ds/user", L"ordinary list", true, true, L"Project").visible,
+			L"datasource administrative status alone does not qualify for Project Admin");
+		const auto member = ProjectAdminContext(L"ds/user/project-one", L"*BA", false, true, L"Test work area");
+		Expect(member.visible && !member.actions[0].enabled && member.actions[1].enabled && member.actions[2].enabled,
+			L"project membership enables owned-list and project tools while datasource user creation requires its own rights");
+		const auto noProject = ProjectAdminContext(L"ds/user/no-project", L"A-Project Administrator", false, false, L"");
+		Expect(noProject.visible && !noProject.actions[2].enabled && !noProject.actions[3].enabled && !noProject.status.empty(),
+			L"eligible users retain the tab outside a work area with project-specific tools disabled");
+		FakeHost host; host.projectAdmin = member;
+		Host callbacks{&host, FakeHost::Refresh, FakeHost::Execute};
+		callbacks.refreshProjectAdmin = FakeHost::RefreshProjectAdmin; callbacks.executeProjectAdmin = FakeHost::ExecuteProjectAdmin;
+		callbacks.refreshAdmin = FakeHost::RefreshAdmin; callbacks.executeAdmin = FakeHost::ExecuteAdmin;
+		callbacks.refreshWorkflow = FakeHost::RefreshWorkflow; callbacks.executeWorkflow = FakeHost::ExecuteWorkflow;
+		HWND window = Create(owner, GetModuleHandleW(nullptr), callbacks);
+		Expect(window != nullptr && IsHealthy(window), L"Project Admin uses the shared healthy contextual ribbon");
+		if (window == nullptr) return;
+		ShowWindow(window, SW_SHOWNOACTIVATE);
+		HWND tabs = FindWindowExW(window, nullptr, WC_TABCONTROLW, nullptr);
+		Expect(TabCtrl_GetItemCount(tabs) == 5 && SelectTab(window, Tab::ProjectAdmin) && TabCtrl_GetCurSel(tabs) == 4 && !SelectTab(window, Tab::Admin),
+			L"Project Admin can be visible independently of DataSource Admin");
+		SetFocus(tabs); QueuedKey(tabs, VK_DOWN);
+		Expect(GetDlgCtrlID(GetFocus()) == kFirstProjectAdmin + 1 && QueuedKey(GetFocus(), VK_RETURN) &&
+			host.lastProjectAdmin == static_cast<UINT>(ProjectAdminCommand::Members), L"keyboard entry skips unauthorized creation and opens Users and Lists");
+		QueuedKey(GetFocus(), VK_RETURN, WM_KEYUP);
+		Expect(!InvokeProjectAdmin(window, kFirstProjectAdmin), L"the disabled project New User button cannot be dispatched");
+		host.admin = AdminContext(L"ds/user/admin-role", true, false); Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 6 && SelectedTab(window) == Tab::ProjectAdmin && TabCtrl_GetCurSel(tabs) == 5,
+			L"inserting DataSource Admin preserves the selected Project Admin identity");
+		host.workflow = {true, false, L"ds/folder/workflow", {{11, L"Next", true, WorkflowActionKind::Next}}}; Refresh(window);
+		Expect(TabCtrl_GetItemCount(tabs) == 7 && SelectedTab(window) == Tab::ProjectAdmin && TabCtrl_GetCurSel(tabs) == 6,
+			L"all three contextual pages coexist in stable keyboard order");
+		host.projectAdmin = ProjectAdminContext(L"ds/user/project-one", L"*BA", true, true, L"Test work area"); Refresh(window);
+		Expect(InvokeProjectAdmin(window, kFirstProjectAdmin) && host.lastProjectAdmin == static_cast<UINT>(ProjectAdminCommand::NewUser),
+			L"Project Admin exposes user creation when current datasource rights also allow it");
+		if (preview != nullptr)
+		{
+			RECT original{}; GetWindowRect(owner, &original);
+			SetWindowPos(owner, nullptr, 0, 0, 1280, 800, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+			HWND content = CreateWindowExW(0, L"STATIC", L"Project content", WS_CHILD | WS_VISIBLE, 0, 0, 1200, 600, owner, nullptr, GetModuleHandleW(nullptr), nullptr);
+			Expect(Dock(window, true) && SaveRibbonPreview(window, preview), L"native combined DataSource Admin and Project Admin preview written");
+			Dock(window, false); DestroyWindow(content);
+			SetWindowPos(owner, nullptr, 0, 0, original.right - original.left, original.bottom - original.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+		}
+		EnableWindow(owner, FALSE); Refresh(window);
+		Expect(SelectedTab(window) == Tab::ProjectAdmin && !InvokeProjectAdmin(window, kFirstProjectAdmin + 2),
+			L"native modal dialogs preserve Project Admin but block action dispatch");
+		EnableWindow(owner, TRUE); Refresh(window);
+		const auto before = host.projectAdminExecutions;
+		host.projectAdmin.context = L"ds/user/other-project";
+		Expect(!InvokeProjectAdmin(window, kFirstProjectAdmin + 2) && host.projectAdminExecutions == before,
+			L"changing the work area prevents stale project action dispatch");
+		Refresh(window); host.projectAdmin = {}; Refresh(window);
+		Expect(SelectedTab(window) == Tab::Home && TabCtrl_GetItemCount(tabs) == 6 && !InvokeProjectAdmin(window, kFirstProjectAdmin),
+			L"losing eligible userlist membership removes Project Admin and returns focus to Home");
+		host.projectAdmin = member; Refresh(window); SelectTab(window, Tab::ProjectAdmin);
+		host.destroyOnProjectAdminRefresh = window;
+		Expect(!InvokeProjectAdmin(window, kFirstProjectAdmin + 1) && !IsWindow(window), L"destruction during project context revalidation is safe");
 	}
 
 	enum class UserDialogMode { Federated, Logical, Cancel, Throw };
@@ -1830,6 +1944,7 @@ int wmain(int argc, wchar_t* argv[])
 	CheckVersionsToggle(owner, argc >= 7 && wcscmp(argv[5], L"--view-preview") == 0 ? argv[6] : nullptr);
 	CheckSelectors(owner, argc >= 9 && wcscmp(argv[7], L"--selectors-preview") == 0 ? argv[8] : nullptr);
 	CheckAdminAndRecovery(owner, argc >= 11 && wcscmp(argv[9], L"--admin-preview") == 0 ? argv[10] : nullptr);
+	CheckProjectAdmin(owner, argc >= 21 && wcscmp(argv[19], L"--project-admin-preview") == 0 ? argv[20] : nullptr);
 	CheckUserDialog(owner, argc >= 17 && wcscmp(argv[15], L"--new-user-preview") == 0 ? argv[16] : nullptr,
 		argc >= 19 && wcscmp(argv[17], L"--logical-user-preview") == 0 ? argv[18] : nullptr);
 	CheckClassicRestoration();
