@@ -855,6 +855,9 @@ namespace
 			fixture.bars[i] = CreateWindowExW(0, TOOLBARCLASSNAMEW, nullptr, WS_CHILD | (i == 0 ? WS_VISIBLE : 0), 0, 0, 200, 28,
 				i == 3 ? floating : frame, reinterpret_cast<HMENU>(static_cast<UINT_PTR>(fixture.ids[i])), instance, nullptr);
 		SetWindowSubclass(frame, ClassicFrame, 1, reinterpret_cast<DWORD_PTR>(&fixture)); ShowWindow(frame, SW_SHOWNOACTIVATE);
+		EnableWindow(frame, FALSE);
+		Expect(QuickAccess::RestoreClassicToolbars(frame).failed != 0 && fixture.commands == 0, L"Classic recovery does not dispatch toolbar commands behind a modal dialog");
+		EnableWindow(frame, TRUE);
 		const auto result = QuickAccess::RestoreClassicToolbars(frame);
 		Expect(result.found == 4 && result.restored == 2 && result.skipped == 1 && result.failed == 0, L"Classic recovery restores hidden docked and floating native toolbars and skips unavailable bars");
 		Expect(fixture.commands == 2 && fixture.unrelated == 0 && IsWindowVisible(fixture.bars[0]), L"Classic recovery leaves visible toolbars on and never invokes Customize or unrelated commands");

@@ -28,6 +28,7 @@ namespace
 	bool g_classicPreferred = false;
 	bool g_ribbonExpected = false;
 	bool g_creationFailed = false;
+	bool g_restorePending = false;
 	UINT_PTR g_startupTimer = 0;
 	unsigned g_attempts = 0;
 	LONG g_initialised = 0;
@@ -717,6 +718,8 @@ namespace
 		if (IsWindow(g_window)) { QuickAccess::Dock(g_window, false); DestroyWindow(g_window); }
 		g_window = nullptr;
 		Report(reason);
+		g_restorePending = IsWindow(g_frame) && !IsWindowEnabled(g_frame);
+		if (g_restorePending) { Report(L"native toolbar restoration deferred until the modal dialog closes"); return true; }
 		const auto restored = QuickAccess::RestoreClassicToolbars(g_frame);
 		if (interactive && (restored.failed != 0 || restored.found == 0))
 			MessageBoxW(g_frame, L"The ribbon is stopped. Some native toolbars could not be verified automatically; use View > Toolbar to choose any missing toolbars.",
@@ -727,6 +730,11 @@ namespace
 	void RibbonFailed(void*, const wchar_t* reason) { RecoverClassic(reason); }
 	void CALLBACK CheckRibbon(HWND, UINT, UINT_PTR, DWORD)
 	{
+		if (g_restorePending && g_classicPreferred && IsWindowEnabled(g_frame))
+		{
+			g_restorePending = false;
+			QuickAccess::RestoreClassicToolbars(g_frame);
+		}
 		if (g_ribbonExpected && !g_classicPreferred && IsWindowEnabled(g_frame) && !QuickAccess::IsHealthy(g_window))
 			RecoverClassic(L"ribbon health check failed; Classic UI restored");
 	}
@@ -758,6 +766,7 @@ namespace
 		if (command == nullptr || (static_cast<UINT>(command->lCommandId) != g_toggleCommand &&
 			static_cast<UINT>(command->lCommandId) != g_viewCommand)) return -1;
 		g_classicPreferred = false;
+		g_restorePending = false;
 		QuickAccess::SaveClassicUiPreference(false);
 		if (!EnsureWindow())
 		{
