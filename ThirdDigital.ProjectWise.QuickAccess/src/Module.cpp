@@ -77,13 +77,15 @@ namespace
 			? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
 	}
 
+	HWND NavigationList();
+
 	bool RefreshCommands(void*, QuickAccess::States& states)
 	{
 		states = {};
 		g_commands.fill(0);
 		if (!IsWindow(g_frame) || !IsWindowEnabled(g_frame)) return false;
 		const HWND tree = aaApi_GetMainDscTree();
-		const HWND list = aaApi_GetActiveDocumentList();
+		const HWND list = NavigationList();
 		const HWND control = QuickAccess::SelectionControl(g_frame, tree, list, g_selectionControl);
 		if (control == nullptr) return false;
 		g_selectionControl = control;
@@ -473,7 +475,7 @@ namespace
 		if (!IsWindow(g_frame) || GetWindowThreadProcessId(g_frame, nullptr) != GetCurrentThreadId()) return false;
 		g_window = QuickAccess::Create(g_frame, g_instance, {nullptr, RefreshGuarded, Execute, Search, CreateAddress, RefreshNavigation, Navigate,
 			[](void*) -> bool {
-				const HWND target = QuickAccess::SelectionControl(g_frame, aaApi_GetMainDscTree(), aaApi_GetActiveDocumentList(), g_selectionControl);
+				const HWND target = QuickAccess::SelectionControl(g_frame, aaApi_GetMainDscTree(), NavigationList(), g_selectionControl);
 				if (target == nullptr) { Report(L"no Explorer selection control is available for keyboard focus"); return false; }
 				SetFocus(target);
 				return GetFocus() == target || IsChild(target, GetFocus());

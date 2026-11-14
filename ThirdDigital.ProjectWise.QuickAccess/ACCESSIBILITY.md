@@ -22,6 +22,10 @@ Disabled controls are exempt from the contrast requirements in 1.4.3/1.4.11. The
 
 ## Automated regression coverage
 
+The conditional Workflow tab uses native owner-drawn buttons with complete accessible names and native enabled/disabled roles. Its actions form one keyboard group: Tab/Shift+Tab leaves the group, arrows/Home/End select an enabled action, Enter/Space activates it, and focused actions scroll into view. Removing the selected Workflow tab dismisses its popup, selects Home and restores visible tab focus. Every dispatch revalidates datasource/folder/workflow/selection and the operation's current native ID, label, kind and enabled state.
+
+Additional checks exercise standard versus WRE native menu extraction without relying on translated submenu captions, inherited disabled menu state, excluding final-status/unrelated commands, menu mnemonics, duplicate/removed/reused command IDs, conditional tab lifecycle, keyboard activation and scroll visibility, stale selections and permissions, modal blocking, and destruction during workflow refresh/execution. Real WRE extension registration, native confirmation/audit comments and actual workflow transitions require the Explorer acceptance pass.
+
 The native check executable exercises queued `WM_KEYDOWN`/`WM_KEYUP` messages through the real UI-thread hook as well as native control dispatch. Checks include tab selection, Enter on mode/navigation/search controls, focus return, holding Enter across a host focus change and nested message loop, modifier preservation, hover/exit isolation, newly disabled commands, narrow-window search visibility, distinct rendered icon silhouettes and a complete Refresh lower sweep. Navigation checks cover empty/single-entry/first/middle/last history, invalid and maximum positions, independent parent availability, address failures and shutdown during either refresh. Existing layout, selection, command gating, popup and shutdown checks remain.
 
 The CI job compiles `QuickAccess.cpp` into a fake-host executable. It does not compile the proprietary SDK adapter (`Module.cpp`) or validate real Explorer integration.

@@ -483,7 +483,7 @@ namespace QuickAccess
 		LRESULT CALLBACK ButtonProc(HWND button, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data)
 		{
 			if (message == WM_GETDLGCODE && GetDlgCtrlID(button) >= static_cast<int>(kFirstWorkflow))
-				return DefSubclassProc(button, message, wParam, lParam) | DLGC_WANTARROWS;
+				return DefSubclassProc(button, message, wParam, lParam) | DLGC_WANTARROWS | (RibbonKey(static_cast<UINT>(wParam)) ? DLGC_WANTMESSAGE : 0);
 			if (message == WM_GETDLGCODE && RibbonKey(static_cast<UINT>(wParam)))
 				return DefSubclassProc(button, message, wParam, lParam) | DLGC_WANTMESSAGE;
 			if (ControlKey(reinterpret_cast<HWND>(data), message, wParam)) return 0;

@@ -42,7 +42,7 @@ namespace QuickAccess
 			info.fMask = MIIM_STRING;
 			if (!GetMenuItemInfoW(menu, index, TRUE, &info)) return {};
 			std::wstring raw(static_cast<std::size_t>(info.cch) + 1, L'\0');
-			info.pszText = raw.data();
+			info.dwTypeData = raw.data();
 			info.cch = static_cast<UINT>(raw.size());
 			if (!GetMenuItemInfoW(menu, index, TRUE, &info)) return {};
 			raw.resize(info.cch);
