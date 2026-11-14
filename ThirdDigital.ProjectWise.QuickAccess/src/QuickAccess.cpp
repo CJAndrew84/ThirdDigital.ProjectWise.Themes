@@ -1238,7 +1238,7 @@ namespace QuickAccess
 			return LayoutRibbon(window, state);
 		}
 
-		bool Initialise(HWND window, WindowState& state) noexcept
+		bool Initialise(HWND window, WindowState& state)
 		{
 			INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES | ICC_TAB_CLASSES};
 			if (!InitCommonControlsEx(&controls)) return false;

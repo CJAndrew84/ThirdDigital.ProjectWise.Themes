@@ -1507,6 +1507,7 @@ namespace
 
 int wmain(int argc, wchar_t* argv[])
 {
+	std::setvbuf(stdout, nullptr, _IONBF, 0);
 	Expect(sizeof(void*) == 4, L"x86 Explorer architecture");
 	CheckNavigationAvailability();
 	CheckMenuStates();
