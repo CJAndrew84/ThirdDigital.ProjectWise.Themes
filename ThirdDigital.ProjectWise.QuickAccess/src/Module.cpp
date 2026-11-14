@@ -942,11 +942,17 @@ namespace
 		__try { return IsWindowEnabled(g_frame) && ExecuteAdminImpl(shown, command); }
 		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
 	}
-	struct ManagerContext { HDSOURCE source; LONG actor; };
+	struct ManagerContext { HDSOURCE source; LONG actor; std::wstring datasource; };
+	bool ManagerIdentity(const ManagerContext& expected)
+	{
+		wchar_t datasource[1024]{};
+		return IsWindow(g_frame) && expected.source == aaApi_GetActiveDatasource() && expected.actor == aaApi_GetCurrentUserId() &&
+			aaApi_GetActiveDatasourceName(datasource, ARRAYSIZE(datasource)) && expected.datasource == datasource;
+	}
 	bool ManagerEligible(void* context, bool fresh, std::wstring& error)
 	{
 		const auto& expected = *static_cast<ManagerContext*>(context);
-		if (!IsWindow(g_frame) || expected.source != aaApi_GetActiveDatasource() || expected.actor != aaApi_GetCurrentUserId())
+		if (!ManagerIdentity(expected))
 		{ error = L"Activate the original datasource and user, then Refresh."; return false; }
 		QuickAccess::ContextState current; LONG project = 0;
 		if (!BuildProjectAdmin(current, project, fresh) || !current.visible)
@@ -965,7 +971,7 @@ namespace
 	{
 		const auto& expected = *static_cast<ManagerContext*>(context);
 		QuickAccess::ContextState current;
-		return expected.source == aaApi_GetActiveDatasource() && expected.actor == aaApi_GetCurrentUserId() && BuildAdmin(current) && current.visible;
+		return ManagerIdentity(expected) && BuildAdmin(current) && current.visible;
 	}
 	bool ManagerCreationAllowed(void* context, std::wstring& error) { return ManagerEligible(context, true, error); }
 	struct ManagerCreation
@@ -1029,7 +1035,9 @@ namespace
 				}
 			case QuickAccess::ProjectAdminCommand::Members:
 				{
-					auto* context = new (std::nothrow) ManagerContext{aaApi_GetActiveDatasource(), aaApi_GetCurrentUserId()};
+					wchar_t datasourceName[1024]{};
+					if (!aaApi_GetActiveDatasourceName(datasourceName, ARRAYSIZE(datasourceName))) return false;
+					auto* context = new (std::nothrow) ManagerContext{aaApi_GetActiveDatasource(), aaApi_GetCurrentUserId(), datasourceName};
 					if (context != nullptr)
 					{
 						const QuickAccess::UserManagerServices services{context, ManagerEligible, ManagerPrepare, ManagerCanCreate, ManagerCreate, DestroyManagerContext};

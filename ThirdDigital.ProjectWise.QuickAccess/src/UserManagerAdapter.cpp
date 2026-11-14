@@ -51,7 +51,12 @@ namespace QuickAccess
 			std::vector<LONG> pending;
 			std::size_t memberRecords = 0;
 			~Backend() { if (services.destroy) services.destroy(services.context); }
-			bool Same() const { return IsWindow(owner) && source != nullptr && source == aaApi_GetActiveDatasource() && actor == aaApi_GetCurrentUserId(); }
+			bool Same() const
+			{
+				wchar_t current[1024]{};
+				return IsWindow(owner) && source != nullptr && source == aaApi_GetActiveDatasource() && actor == aaApi_GetCurrentUserId() &&
+					aaApi_GetActiveDatasourceName(current, ARRAYSIZE(current)) && datasource == current;
+			}
 			bool Valid(bool writing, std::wstring& error)
 			{
 				if (!Same()) { error = L"Activate the original datasource and user, then Refresh. Pending changes have not been sent."; return false; }

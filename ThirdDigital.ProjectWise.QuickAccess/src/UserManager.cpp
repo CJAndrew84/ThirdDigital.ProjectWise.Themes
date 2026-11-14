@@ -19,8 +19,8 @@ namespace QuickAccess::UserManagement
 			bool owned = false, destroyed = false, loading = false, applyAfterLoad = false, invalid = false, updating = false;
 			unsigned active = 0;
 			std::vector<Node> nodes; std::vector<std::size_t> rows;
-			std::wstring scratch; HFONT font = nullptr; HIMAGELIST spacing = nullptr;
-			~Window() { if (spacing) ImageList_Destroy(spacing); if (font) DeleteObject(font); if (host.destroy) host.destroy(host.context); }
+			std::wstring scratch; HFONT font = nullptr;
+			~Window() { if (font) DeleteObject(font); if (host.destroy) host.destroy(host.context); }
 		};
 		struct Lease
 		{
@@ -42,13 +42,23 @@ namespace QuickAccess::UserManagement
 					for (HWND dialog : g_windows) if (message->hwnd == dialog || IsChild(dialog, message->hwnd))
 					{
 						g_routing = true; const bool consumed = IsDialogMessageW(dialog, message) != FALSE; g_routing = false;
-						if (consumed) message->message = WM_NULL;
+						if (!consumed && IsWindow(message->hwnd)) { TranslateMessage(message); DispatchMessageW(message); }
+						message->message = WM_NULL; // Keep Explorer's accelerators out of the modeless editor.
 						break;
 					}
 			}
 			return CallNextHookEx(g_keyboard, code, wParam, lParam);
 		}
 		HWND Control(const Window& window, int id) { return GetDlgItem(window.dialog, id); }
+		void RowSpacing(Window& window, int dpi)
+		{
+			for (int id : {IDC_MANAGER_GRID, IDC_MANAGER_MEMBERS, IDC_MANAGER_PENDING})
+			{
+				const HWND view = Control(window, id); if (!view) continue;
+				const HIMAGELIST image = ImageList_Create(1, MulDiv(24, dpi, 96), ILC_COLOR32, 1, 0);
+				if (image) { const HIMAGELIST previous = ListView_SetImageList(view, image, LVSIL_SMALL); if (previous) ImageList_Destroy(previous); }
+			}
+		}
 		void Status(Window& window, const std::wstring& text) { SetDlgItemTextW(window.dialog, IDC_MANAGER_STATUS, text.c_str()); }
 		bool Busy(const Window& window) { return window.loading || window.batch.Busy(); }
 		const User* UserById(const Window& window, LONG id)
@@ -216,7 +226,7 @@ namespace QuickAccess::UserManagement
 			RECT area{}; GetClientRect(window.dialog, &area); const int dpi = static_cast<int>(GetDpiForWindow(window.dialog));
 			const auto s = [dpi](int n) { return MulDiv(n, dpi, 96); };
 			const auto place = [&](int id, int x, int y, int w, int h) { SetWindowPos(Control(window, id), nullptr, x, y, std::max(1, w), std::max(1, h), SWP_NOZORDER | SWP_NOACTIVATE); };
-			const int margin = s(12), gap = s(8), width = std::max(s(200), area.right - 2 * margin);
+			const int margin = s(12), gap = s(8), width = std::max(s(200), static_cast<int>(area.right) - 2 * margin);
 			constexpr std::pair<int, int> buttons[] = {{IDC_MANAGER_REFRESH, 88}, {IDC_MANAGER_TEMPLATE, 132}, {IDC_MANAGER_COPY, 150}, {IDC_MANAGER_NEW, 108}, {IDC_MANAGER_APPLY, 120}, {IDC_MANAGER_DISCARD, 140}, {IDC_MANAGER_CLOSE, 80}};
 			int rows = 1, x = 0; for (const auto& button : buttons) { if (x && x + s(button.second) > width) { ++rows; x = 0; } x += s(button.second) + gap; }
 			const int statusTop = area.bottom - margin - s(42), buttonTop = statusTop - gap - rows * s(34), templateTop = buttonTop - s(28);
@@ -289,18 +299,37 @@ namespace QuickAccess::UserManagement
 					window->font = CreateFontW(-MulDiv(11, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 					for (HWND child = GetWindow(dialog, GW_CHILD); child != nullptr; child = GetWindow(child, GW_HWNDNEXT)) SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(window->font), TRUE);
 					for (int id : {IDC_MANAGER_GRID, IDC_MANAGER_MEMBERS, IDC_MANAGER_PENDING}) ListView_SetExtendedListViewStyle(Control(*window, id), LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_LABELTIP | (id == IDC_MANAGER_MEMBERS ? LVS_EX_CHECKBOXES : 0));
-					window->spacing = ImageList_Create(1, MulDiv(24, dpi, 96), ILC_COLOR32, 1, 0);
-					for (int id : {IDC_MANAGER_GRID, IDC_MANAGER_MEMBERS, IDC_MANAGER_PENDING}) ListView_SetImageList(Control(*window, id), window->spacing, LVSIL_SMALL);
+					RowSpacing(*window, dpi);
 					TreeView_SetItemHeight(Control(*window, IDC_MANAGER_TREE), MulDiv(24, dpi, 96));
 					Column(Control(*window, IDC_MANAGER_GRID), 0, L"User", MulDiv(180, dpi, 96)); Column(Control(*window, IDC_MANAGER_GRID), 1, L"Email", MulDiv(220, dpi, 96));
 					Column(Control(*window, IDC_MANAGER_MEMBERS), 0, L"Userlist (direct member)", MulDiv(210, dpi, 96)); Column(Control(*window, IDC_MANAGER_MEMBERS), 1, L"Current membership", MulDiv(150, dpi, 96)); Column(Control(*window, IDC_MANAGER_MEMBERS), 2, L"Editing", MulDiv(100, dpi, 96));
 					Column(Control(*window, IDC_MANAGER_PENDING), 0, L"User", MulDiv(160, dpi, 96)); Column(Control(*window, IDC_MANAGER_PENDING), 1, L"Userlist", MulDiv(200, dpi, 96)); Column(Control(*window, IDC_MANAGER_PENDING), 2, L"Change", MulDiv(85, dpi, 96));
 					MONITORINFO monitor{sizeof(monitor)}; GetMonitorInfoW(MonitorFromWindow(dialog, MONITOR_DEFAULTTONEAREST), &monitor);
 					SetWindowPos(dialog, nullptr, monitor.rcWork.left + 16, monitor.rcWork.top + 16,
-						std::min(MulDiv(1200, dpi, 96), monitor.rcWork.right - monitor.rcWork.left - 32), std::min(MulDiv(760, dpi, 96), monitor.rcWork.bottom - monitor.rcWork.top - 32), SWP_NOZORDER | SWP_NOACTIVATE);
+						std::min(MulDiv(1200, dpi, 96), static_cast<int>(monitor.rcWork.right - monitor.rcWork.left - 32)), std::min(MulDiv(760, dpi, 96), static_cast<int>(monitor.rcWork.bottom - monitor.rcWork.top - 32)), SWP_NOZORDER | SWP_NOACTIVATE);
 					Layout(*window); SetTimer(dialog, 1, 100, nullptr); Begin(*window, 0); return TRUE;
 				}
 				if (window == nullptr) return FALSE;
+				if (message == WM_GETMINMAXINFO)
+				{
+					auto* bounds = reinterpret_cast<MINMAXINFO*>(lParam); const int dpi = static_cast<int>(GetDpiForWindow(dialog));
+					MONITORINFO monitor{sizeof(monitor)}; GetMonitorInfoW(MonitorFromWindow(dialog, MONITOR_DEFAULTTONEAREST), &monitor);
+					bounds->ptMinTrackSize.x = std::min(MulDiv(640, dpi, 96), static_cast<int>(monitor.rcWork.right - monitor.rcWork.left));
+					bounds->ptMinTrackSize.y = std::min(MulDiv(480, dpi, 96), static_cast<int>(monitor.rcWork.bottom - monitor.rcWork.top)); return TRUE;
+				}
+				if (message == WM_DPICHANGED)
+				{
+					const int dpi = HIWORD(wParam); const HFONT font = CreateFontW(-MulDiv(11, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					if (font)
+					{
+						for (HWND child = GetWindow(dialog, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+						if (window->font) DeleteObject(window->font); window->font = font;
+					}
+					RowSpacing(*window, dpi);
+					TreeView_SetItemHeight(Control(*window, IDC_MANAGER_TREE), MulDiv(24, dpi, 96));
+					const auto* area = reinterpret_cast<RECT*>(lParam);
+					SetWindowPos(dialog, nullptr, area->left, area->top, area->right - area->left, area->bottom - area->top, SWP_NOZORDER | SWP_NOACTIVATE); Layout(*window); return TRUE;
+				}
 				if (message == WM_SIZE) { Layout(*window); return TRUE; }
 				if (message == WM_APP + 1) { UpdateMembers(*window); return TRUE; }
 				if (message == WM_APP + 2)
@@ -439,6 +468,8 @@ namespace QuickAccess::UserManagement
 		if (!InitCommonControlsEx(&controls)) return nullptr;
 		HWND dialog = CreateDialogParamW(instance, MAKEINTRESOURCEW(IDD_USER_MANAGER), owner, Procedure, reinterpret_cast<LPARAM>(window.get()));
 		if (dialog == nullptr || !IsWindow(dialog) || State(dialog) != window.get()) return nullptr;
+		for (int id : {IDC_MANAGER_TREE, IDC_MANAGER_SEARCH, IDC_MANAGER_GRID, IDC_MANAGER_MEMBERS, IDC_MANAGER_PENDING, IDC_MANAGER_APPLY, IDC_MANAGER_STATUS})
+			if (GetDlgItem(dialog, id) == nullptr) { DestroyWindow(dialog); return nullptr; }
 		try
 		{
 			g_windows.push_back(dialog);
