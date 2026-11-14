@@ -495,7 +495,7 @@ namespace
 				const HWND list = NavigationList();
 				const auto view = reinterpret_cast<HAAVIEW>(item.id);
 				if (!ExplorerControl(list) || !aaApi_ViewIsValidViewHandle(view) || !aaApi_DocListSetView(list, view)) return false;
-				if (!aaApi_ViewSetLastViewName(item.label.c_str())) Report(L"view applied but its last-used name could not be updated");
+				if (!aaApi_ViewSetLastViewName(view)) Report(L"view applied but its last-used name could not be updated");
 				aaApi_SendViewSettingsNotify();
 				changed = aaApi_DocListGetViewHandle(list) == view;
 			}
