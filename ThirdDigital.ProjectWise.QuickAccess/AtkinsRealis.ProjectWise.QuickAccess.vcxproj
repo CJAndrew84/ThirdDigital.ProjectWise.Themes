@@ -50,6 +50,6 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CheckProjectWiseSdk" BeforeTargets="PrepareForBuild">
 	<Error Condition="'$(PWSDKDir)' == ''" Text="PWSDKDir is not set. Point it at the ProjectWise SDK root." />
-	<Error Condition="!Exists('$(PWSDKDir)\include\aawindms.h') or !Exists('$(PWSDKDir)\lib\Win32\dmawin.lib')" Text="The ProjectWise SDK must contain include\aawindms.h and lib\Win32\dmawin.lib. Explorer 23.06 uses an x86 module." />
+	<Error Condition="!Exists('$(PWSDKDir)\include\aawindms.h') or !Exists('$(PWSDKDir)\include\aadmsapi.h') or !Exists('$(PWSDKDir)\lib\Win32\dmawin.lib') or !Exists('$(PWSDKDir)\lib\Win32\dmscli.lib')" Text="The ProjectWise SDK must contain include\aawindms.h, include\aadmsapi.h and the Win32 dmawin.lib/dmscli.lib libraries. Explorer 23.06 uses an x86 module." />
   </Target>
 </Project>

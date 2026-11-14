@@ -7,7 +7,8 @@
 
 namespace QuickAccess
 {
-	constexpr std::size_t kButtonCount = 22;
+	constexpr std::size_t kShowAllVersions = 22;
+	constexpr std::size_t kButtonCount = 23;
 	constexpr UINT kFirstButton = 100;
 	constexpr UINT kMaximise = 200;
 	constexpr UINT kMinimise = 201;

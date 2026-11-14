@@ -20,7 +20,7 @@ namespace QuickAccess
 		constexpr wchar_t kClass[] = L"AtkinsRealis.ProjectWise.QuickAccess";
 		constexpr const wchar_t* kLabels[] = {L"New Folder", L"Add Documents", L"Check Out", L"Check In", L"Free", L"Properties", L"Refresh",
 			L"Open", L"New Document", L"Thumbnails", L"Large Icons", L"Small Icons", L"List", L"Details", L"Manage Views", L"Interface",
-			L"Advanced Search", L"Find in Folder", L"Local Documents", L"User Settings", L"Wizard Manager", L"Help Index"};
+			L"Advanced Search", L"Find in Folder", L"Local Documents", L"User Settings", L"Wizard Manager", L"Help Index", L"Show all versions"};
 		constexpr const wchar_t* kTabs[] = {L"Home", L"View", L"Search", L"Tools", L"Workflow"};
 		static_assert(ARRAYSIZE(kLabels) == kButtonCount);
 		thread_local HWND g_popup = nullptr;
@@ -397,15 +397,19 @@ namespace QuickAccess
 			case 20:
 				path({{4, 25}, {20, 9}, {25, 14}, {9, 30}, {4, 25}}); line(16, 13, 21, 18);
 				line(8, 3, 8, 11); line(4, 7, 12, 7); line(26, 2, 26, 8); line(23, 5, 29, 5); break;
-			case 22: case 23:
+			case 22: // Layered documents distinguish version visibility from upload/create.
+				path({{3, 21}, {3, 3}, {18, 3}}); path({{8, 25}, {8, 7}, {23, 7}});
+				path({{13, 29}, {13, 11}, {24, 11}, {29, 16}, {29, 29}, {13, 29}});
+				line(17, 20, 25, 20); line(17, 25, 25, 25); break;
+			case 23: case 24:
 				line(4, 16, 28, 16);
-				if (command == 22) path({{20, 8}, {28, 16}, {20, 24}});
+				if (command == 23) path({{20, 8}, {28, 16}, {20, 24}});
 				else path({{12, 8}, {4, 16}, {12, 24}});
 				break;
-			case 24:
+			case 25:
 				path({{4, 10}, {10, 4}, {22, 4}, {28, 10}}); path({{22, 10}, {28, 10}, {28, 4}});
 				path({{28, 22}, {22, 28}, {10, 28}, {4, 22}}); path({{4, 28}, {4, 22}, {10, 22}}); break;
-			case 25:
+			case 26:
 				Rectangle(dc, 3, 11, 12, 21); Rectangle(dc, 21, 3, 30, 12); Rectangle(dc, 21, 21, 30, 30);
 				path({{12, 16}, {17, 16}, {17, 7}, {21, 7}}); path({{17, 16}, {17, 25}, {21, 25}}); break;
 			default:
@@ -607,7 +611,7 @@ namespace QuickAccess
 			{
 				const auto& action = state.workflow.actions[draw.CtlID - kFirstWorkflow];
 				const int dpi = static_cast<int>(GetDpiForWindow(draw.hwndItem)), icon = MulDiv(32, dpi, 96);
-				Glyph(draw.hDC, 22 + static_cast<std::size_t>(action.kind), (draw.rcItem.right - icon) / 2,
+				Glyph(draw.hDC, kButtonCount + static_cast<std::size_t>(action.kind), (draw.rcItem.right - icon) / 2,
 					draw.rcItem.top + MulDiv(4, dpi, 96), icon, ContrastColour(foreground, background, 3.0));
 				RECT label = draw.rcItem;
 				InflateRect(&label, -MulDiv(6, dpi, 96), -MulDiv(4, dpi, 96));
@@ -683,7 +687,8 @@ namespace QuickAccess
 		{
 			struct Group { std::size_t first, end; const wchar_t* label; };
 			constexpr Group groups[] = {{0, 2, L"Create"}, {2, 6, L"Document control"}, {6, 9, L"Open & refresh"},
-				{9, 14, L"Layout"}, {14, 16, L"Configuration"}, {16, 18, L"Find"}, {18, 21, L"Administration"}, {21, 22, L"Help"}};
+				{9, 14, L"Layout"}, {14, 16, L"Configuration"}, {16, 18, L"Find"}, {18, 21, L"Administration"}, {21, 22, L"Help"},
+				{kShowAllVersions, kShowAllVersions + 1, L"Versions"}};
 			RECT client{};
 			GetClientRect(page, &client);
 			Fill(dc, client, GetSysColor(COLOR_WINDOW));
@@ -1049,6 +1054,10 @@ namespace QuickAccess
 			state.font = font;
 			SendMessageW(state.toolbar, TB_SETBUTTONWIDTH, 0, MAKELPARAM(scale(112), scale(112)));
 			SendMessageW(state.toolbar, TB_SETBUTTONSIZE, 0, MAKELPARAM(scale(112), scale(64)));
+			TBBUTTONINFOW versions{sizeof(versions)};
+			versions.dwMask = TBIF_SIZE;
+			versions.cx = static_cast<WORD>(scale(160));
+			if (!SendMessageW(state.toolbar, TB_SETBUTTONINFOW, kFirstButton + kShowAllVersions, reinterpret_cast<LPARAM>(&versions))) return false;
 			return LayoutRibbon(window, state);
 		}
 
@@ -1099,6 +1108,7 @@ namespace QuickAccess
 				button.iBitmap = static_cast<int>(i);
 				button.idCommand = kFirstButton + static_cast<int>(i);
 				button.fsStyle = BTNS_BUTTON | BTNS_SHOWTEXT;
+				if (i == kShowAllVersions) button.fsStyle |= BTNS_CHECK;
 				button.iString = reinterpret_cast<INT_PTR>(kLabels[i]);
 			}
 			if (!SendMessageW(state.toolbar, TB_ADDBUTTONS, buttons.size(), reinterpret_cast<LPARAM>(buttons.data()))) return false;
@@ -1505,6 +1515,7 @@ namespace QuickAccess
 
 	Tab ButtonTab(std::size_t button) noexcept
 	{
+		if (button == kShowAllVersions) return Tab::View;
 		if (button < 9) return Tab::Home;
 		if (button < 16) return Tab::View;
 		if (button < 18) return Tab::Search;

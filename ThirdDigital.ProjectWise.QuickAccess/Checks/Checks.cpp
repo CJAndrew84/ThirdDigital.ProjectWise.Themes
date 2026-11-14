@@ -70,6 +70,8 @@ namespace
 			auto& host = *static_cast<FakeHost*>(context);
 			++host.executions;
 			host.last = button;
+			if (button == QuickAccess::kShowAllVersions && host.executeSucceeds)
+				host.states[button].checked = !host.states[button].checked;
 			if (IsWindow(host.focusOnExecute)) SetFocus(host.focusOnExecute);
 			if (IsWindow(host.nestedRepeatTarget))
 			{
@@ -342,7 +344,7 @@ namespace
 	bool SaveCommandPreview(HWND window, HWND toolbar, const wchar_t* path)
 	{
 		const int dpi = static_cast<int>(GetDpiForWindow(window));
-		const int cellWidth = MulDiv(112, dpi, 96), cellHeight = MulDiv(64, dpi, 96), header = MulDiv(32, dpi, 96);
+		const int cellWidth = MulDiv(160, dpi, 96), cellHeight = MulDiv(64, dpi, 96), header = MulDiv(32, dpi, 96);
 		const int width = cellWidth * 6, sectionHeight = header + cellHeight * 4, height = sectionHeight * 2;
 		BITMAPINFO info{};
 		info.bmiHeader = {sizeof(BITMAPINFOHEADER), width, -height, 1, 32, BI_RGB};
@@ -410,7 +412,7 @@ namespace
 		return text;
 	}
 
-	bool SaveWorkflowPreview(HWND window, const wchar_t* path)
+	bool SaveRibbonPreview(HWND window, const wchar_t* path)
 	{
 		RECT client{};
 		GetClientRect(window, &client);
@@ -449,6 +451,56 @@ namespace
 		DeleteObject(bitmap);
 		DeleteDC(dc);
 		return result;
+	}
+
+	void CheckVersionsToggle(HWND owner, const wchar_t* previewPath)
+	{
+		using namespace QuickAccess;
+		FakeHost host;
+		host.states[kShowAllVersions] = {true, false};
+		HWND window = Create(owner, GetModuleHandleW(nullptr), {&host, FakeHost::Refresh, FakeHost::Execute});
+		Expect(window != nullptr, L"version-display ribbon created");
+		if (window == nullptr) return;
+		HWND toolbar = Toolbar(window);
+		const UINT command = kFirstButton + static_cast<UINT>(kShowAllVersions);
+		Expect(ButtonTab(kShowAllVersions) == Tab::View && SelectTab(window, Tab::View) &&
+			!SendMessageW(toolbar, TB_ISBUTTONHIDDEN, command, 0), L"Show all versions belongs to View");
+		TBBUTTON button{};
+		SendMessageW(toolbar, TB_GETBUTTON, kShowAllVersions, reinterpret_cast<LPARAM>(&button));
+		Expect((button.fsStyle & BTNS_CHECK) != 0, L"Show all versions exposes a native toggle-button style");
+		RECT item{};
+		SendMessageW(toolbar, TB_GETITEMRECT, kShowAllVersions, reinterpret_cast<LPARAM>(&item));
+		Expect(item.right - item.left >= MulDiv(160, static_cast<int>(GetDpiForWindow(window)), 96),
+			L"version-display button leaves room for its complete label");
+		Expect(!SendMessageW(toolbar, TB_ISBUTTONCHECKED, command, 0), L"latest-only host setting leaves the toggle unchecked");
+		ShowWindow(owner, SW_SHOWNOACTIVATE);
+		ShowWindow(window, SW_SHOWNOACTIVATE);
+		SetFocus(toolbar);
+		QueuedKey(toolbar, VK_END);
+		Expect(SendMessageW(toolbar, TB_GETHOTITEM, 0, 0) == static_cast<LRESULT>(kShowAllVersions),
+			L"keyboard End reaches Show all versions");
+		Expect(QueuedKey(toolbar, VK_RETURN) && host.executions == 1 && host.last == kShowAllVersions &&
+			SendMessageW(toolbar, TB_ISBUTTONCHECKED, command, 0), L"Enter toggles all versions on once and reflects the host state");
+		QueuedKey(toolbar, VK_RETURN, WM_KEYUP);
+		if (previewPath != nullptr) Expect(SaveRibbonPreview(window, previewPath), L"native View version-toggle preview written");
+		Expect(QueuedKey(toolbar, VK_SPACE) && host.executions == 2 && !SendMessageW(toolbar, TB_ISBUTTONCHECKED, command, 0),
+			L"Space toggles all versions off once");
+		QueuedKey(toolbar, VK_SPACE, WM_KEYUP);
+		host.states[kShowAllVersions].checked = true;
+		Refresh(window);
+		Expect(SendMessageW(toolbar, TB_ISBUTTONCHECKED, command, 0) != 0, L"an external native setting change updates the toggle");
+		host.executeSucceeds = false;
+		Expect(!Invoke(window, command) && SendMessageW(toolbar, TB_ISBUTTONCHECKED, command, 0),
+			L"a rejected setting change preserves the host's checked state");
+		host.states[kShowAllVersions].enabled = false;
+		const unsigned before = host.executions;
+		Expect(!Invoke(window, command) && host.executions == before && !SendMessageW(toolbar, TB_ISBUTTONENABLED, command, 0),
+			L"unavailable version settings cannot be dispatched");
+		host.states[kShowAllVersions].enabled = true;
+		host.executeSucceeds = true;
+		SelectTab(window, Tab::Home);
+		Expect(!Invoke(window, command) && host.executions == before, L"Home cannot dispatch View's version toggle");
+		DestroyWindow(window);
 	}
 
 	void CheckAccessibility(HWND owner, HWND window, FakeHost& host, HWND address, HWND content)
@@ -1008,7 +1060,7 @@ namespace
 			{806, L"Reject", true, Kind::Operation}, {807, L"Archive", true, Kind::Operation}, {808, L"Reopen", true, Kind::Operation}};
 		QuickAccess::Refresh(window);
 		page = CommandPage(window);
-		if (previewPath != nullptr) Expect(SaveWorkflowPreview(window, previewPath), L"native Workflow ribbon preview written");
+		if (previewPath != nullptr) Expect(SaveRibbonPreview(window, previewPath), L"native Workflow ribbon preview written");
 		Expect(GetDlgItem(page, QuickAccess::kFirstWorkflow + 7) != nullptr && AccessibleName(GetDlgItem(page, QuickAccess::kFirstWorkflow + 1)) == L"Approve & publish",
 			L"WRE changes replace standard buttons with all configured operations and preserve literal accessible labels");
 		Expect(!QuickAccess::InvokeWorkflow(window, QuickAccess::kFirstWorkflow + 2), L"disabled WRE operations remain non-executable");
@@ -1117,7 +1169,7 @@ int wmain(int argc, wchar_t* argv[])
 	Expect(SendMessageW(toolbar, TB_BUTTONCOUNT, 0, 0) == QuickAccess::kButtonCount, L"all ribbon commands are present in the toolbar");
 	constexpr const wchar_t* expected[] = {L"New Folder", L"Add Documents", L"Check Out", L"Check In", L"Free", L"Properties", L"Refresh",
 		L"Open", L"New Document", L"Thumbnails", L"Large Icons", L"Small Icons", L"List", L"Details", L"Manage Views", L"Interface",
-		L"Advanced Search", L"Find in Folder", L"Local Documents", L"User Settings", L"Wizard Manager", L"Help Index"};
+		L"Advanced Search", L"Find in Folder", L"Local Documents", L"User Settings", L"Wizard Manager", L"Help Index", L"Show all versions"};
 	static_assert(ARRAYSIZE(expected) == QuickAccess::kButtonCount);
 	for (std::size_t n = 0; n < QuickAccess::kButtonCount; ++n)
 	{
@@ -1189,7 +1241,8 @@ int wmain(int argc, wchar_t* argv[])
 	host.destroyOnSearch = searching;
 	Expect(QuickAccess::Search(searching) && !IsWindow(searching), L"ribbon destruction during search is safe");
 	CheckNavigation(owner);
-	CheckWorkflowRibbon(owner, argc == 5 && wcscmp(argv[3], L"--workflow-preview") == 0 ? argv[4] : nullptr);
+	CheckWorkflowRibbon(owner, argc >= 5 && wcscmp(argv[3], L"--workflow-preview") == 0 ? argv[4] : nullptr);
+	CheckVersionsToggle(owner, argc >= 7 && wcscmp(argv[5], L"--view-preview") == 0 ? argv[6] : nullptr);
 	HWND keyboard = QuickAccess::Create(owner, instance, callbacks);
 	SetFocus(owner);
 	host.destroyOnRefresh = keyboard;

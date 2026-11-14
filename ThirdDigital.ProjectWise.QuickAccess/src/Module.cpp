@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <commctrl.h>
+#include <aadmsapi.h>
 #include <aawindms.h>
 #include <delayimp.h>
 
@@ -60,6 +61,7 @@ namespace
 		{IDMT_USER_SETTINGS, 0, 0},
 		{IDMT_WIZARD_MANAGER, 0, 0},
 		{AAMENU_HELP_INDEX, 0, 0},
+		{0, 0, 0}, // Show all versions uses the published user-setting API, not a guessed menu ID.
 	};
 	static_assert(ARRAYSIZE(kCommands) == QuickAccess::kButtonCount);
 
@@ -78,6 +80,46 @@ namespace
 	}
 
 	HWND NavigationList();
+	bool ExplorerControl(HWND control) noexcept;
+
+	bool ReadShowAllVersions(QuickAccess::ButtonState& state)
+	{
+		state = {};
+		__try
+		{
+			if (!IsWindowEnabled(g_frame) || !ExplorerControl(NavigationList()) ||
+				aaApi_GetActiveDatasource() == nullptr || aaApi_GetCurrentUserId() <= 0) return false;
+			const LONG value = aaApi_GetUserNumericSetting(AADMS_PAR_DIS_SHOW_VERSION);
+			if (value != 0 && value != 1) return false;
+			state = {true, value != 0};
+			return true;
+		}
+		__except (SdkLoadExceptionFilter(GetExceptionCode())) { return false; }
+	}
+
+	bool ToggleShowAllVersions()
+	{
+		__try
+		{
+			QuickAccess::ButtonState current{};
+			if (!ReadShowAllVersions(current)) return false;
+			// The GUID-aware setter validates the standard settings group. A failure leaves the displayed state native.
+			if (!aaApi_SetUserNumericSettingByGUID(nullptr, AADMS_PAR_DIS_SHOW_VERSION, current.checked ? 0 : 1))
+			{
+				Report(L"could not change Show all versions");
+				return false;
+			}
+			// Let Explorer repopulate its lists using the same setting as its native control.
+			aaApi_UpdateDocumentWindows();
+			QuickAccess::ButtonState updated{};
+			return ReadShowAllVersions(updated) && updated.checked != current.checked;
+		}
+		__except (SdkLoadExceptionFilter(GetExceptionCode()))
+		{
+			Report(L"SDK version-display setting dependency or export unavailable");
+			return false;
+		}
+	}
 
 	bool RefreshCommands(void*, QuickAccess::States& states)
 	{
@@ -127,7 +169,8 @@ namespace
 		}
 		bool found = false;
 		for (const UINT command : g_commands) found = found || command != 0;
-		initialised = initialised && found;
+		const bool versionsReady = ReadShowAllVersions(states[QuickAccess::kShowAllVersions]);
+		initialised = (initialised && found) || versionsReady;
 		if (!initialised && !g_menuError) Report(L"Explorer command-state query failed; buttons disabled");
 		g_menuError = !initialised;
 		return initialised;
@@ -304,6 +347,7 @@ namespace
 
 	bool Execute(void*, std::size_t button)
 	{
+		if (button == QuickAccess::kShowAllVersions) return ToggleShowAllVersions();
 		if (button >= g_commands.size() || g_commands[button] == 0 || !IsWindowEnabled(g_frame)) return false;
 		if (!IsWindow(g_selectionControl)) return false;
 		SetFocus(g_selectionControl);

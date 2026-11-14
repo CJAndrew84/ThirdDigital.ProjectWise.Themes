@@ -22,6 +22,8 @@ Disabled controls are exempt from the contrast requirements in 1.4.3/1.4.11. The
 
 ## Automated regression coverage
 
+Show all versions is a native toolbar check-style button on View, with a full accessible label and visible checked underline. Tests cover keyboard End/Enter/Space, matching and externally changed host state, rejected/unavailable settings, inactive-tab dispatch and the wider target. The SDK adapter uses ProjectWise's existing user setting and document-window notification; live native-control synchronization and setting restrictions require Explorer acceptance.
+
 The conditional Workflow tab uses native owner-drawn buttons with complete accessible names and native enabled/disabled roles. Its actions form one keyboard group: Tab/Shift+Tab leaves the group, arrows/Home/End select an enabled action, Enter/Space activates it, and focused actions scroll into view. Removing the selected Workflow tab dismisses its popup, selects Home and restores visible tab focus. Every dispatch revalidates datasource/folder/workflow/selection and the operation's current native ID, label, kind and enabled state.
 
 Additional checks exercise standard versus WRE native menu extraction without relying on translated submenu captions, inherited disabled menu state, excluding final-status/unrelated commands, menu mnemonics, duplicate/removed/reused command IDs, conditional tab lifecycle, keyboard activation and scroll visibility, stale selections and permissions, modal blocking, and destruction during workflow refresh/execution. Real WRE extension registration, native confirmation/audit comments and actual workflow transitions require the Explorer acceptance pass.
