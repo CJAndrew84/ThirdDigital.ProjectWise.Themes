@@ -5,6 +5,7 @@
 #include <oleacc.h>
 #include <algorithm>
 #include <cmath>
+#include <cwchar>
 #include <cwctype>
 #include <initializer_list>
 #include <new>
@@ -21,7 +22,7 @@ namespace QuickAccess
 		constexpr const wchar_t* kLabels[] = {L"New Folder", L"Add Documents", L"Check Out", L"Check In", L"Free", L"Properties", L"Refresh",
 			L"Open", L"New Document", L"Thumbnails", L"Large Icons", L"Small Icons", L"List", L"Details", L"Manage Views", L"Interface",
 			L"Advanced Search", L"Find in Folder", L"Local Documents", L"User Settings", L"Wizard Manager", L"Help Index", L"Show all versions"};
-		constexpr const wchar_t* kTabs[] = {L"Home", L"View", L"Search", L"Tools", L"Workflow", L"Admin"};
+		constexpr const wchar_t* kTabs[] = {L"Home", L"View", L"Search", L"Tools", L"Workflow", L"DataSource Admin"};
 		constexpr UINT kRecover = WM_APP + 101;
 		static_assert(ARRAYSIZE(kLabels) == kButtonCount);
 		thread_local HWND g_popup = nullptr;
@@ -814,7 +815,7 @@ namespace QuickAccess
 			if (Contextual(state.tab))
 			{
 				RECT caption{0, client.bottom - MulDiv(24, dpi, 96), client.right, client.bottom};
-				Text(dc, state.font, state.tab == Tab::Admin ? L"Datasource administration" : !state.workflow.status.empty() ? state.workflow.status.c_str() : state.workflow.actions.empty() ? L"Select documents to see workflow actions" :
+				Text(dc, state.font, state.tab == Tab::Admin ? L"DataSource administration" : !state.workflow.status.empty() ? state.workflow.status.c_str() : state.workflow.actions.empty() ? L"Select documents to see workflow actions" :
 					state.workflow.rulesEngine ? L"Rules Engine operations" : L"Workflow transitions", caption,
 					ContrastColour(GetSysColor(COLOR_WINDOWTEXT), GetSysColor(COLOR_WINDOW), 4.5));
 				return;
@@ -1082,7 +1083,20 @@ namespace QuickAccess
 			const int tabsWidth = std::max(1, width - grip);
 			const int commandHeight = commands ? size.cy + scale(28) : 0;
 			const int pageTop = header + (state.popup ? navigationHeight : 0);
-			TabCtrl_SetItemSize(state.tabs, std::min(scale(80), std::max(scale(24), (tabsWidth - 3 * modeWidth - scale(4)) / TabCtrl_GetItemCount(state.tabs))), scale(32));
+			int preferredTabWidth = scale(80);
+			if (HDC dc = GetDC(state.tabs))
+			{
+				const auto previous = state.font != nullptr ? SelectObject(dc, state.font) : nullptr;
+				for (int i = 0; i < TabCtrl_GetItemCount(state.tabs); ++i)
+				{
+					const auto* label = kTabs[static_cast<int>(TabAt(state.tabs, i))]; SIZE measured{};
+					if (GetTextExtentPoint32W(dc, label, static_cast<int>(std::wcslen(label)), &measured))
+						preferredTabWidth = std::max(preferredTabWidth, static_cast<int>(measured.cx) + scale(16));
+				}
+				if (previous != nullptr) SelectObject(dc, previous);
+				ReleaseDC(state.tabs, dc);
+			}
+			TabCtrl_SetItemSize(state.tabs, std::min(preferredTabWidth, std::max(scale(24), (tabsWidth - 3 * modeWidth - scale(4)) / TabCtrl_GetItemCount(state.tabs))), scale(32));
 			success = SetWindowPos(state.tabs, nullptr, grip, 0, tabsWidth, pageTop + commandHeight, SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
 			success = SetWindowPos(state.page, nullptr, scale(4), pageTop, available, commandHeight,
 				SWP_NOZORDER | SWP_NOACTIVATE) != FALSE && success;
@@ -1241,7 +1255,7 @@ namespace QuickAccess
 			INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_BAR_CLASSES | ICC_TAB_CLASSES};
 			if (!InitCommonControlsEx(&controls)) return false;
 			const HINSTANCE instance = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(window, GWLP_HINSTANCE));
-			state.tabs = CreateWindowExW(WS_EX_CONTROLPARENT, WC_TABCONTROLW, L"Ribbon tabs", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPCHILDREN | TCS_FIXEDWIDTH,
+			state.tabs = CreateWindowExW(WS_EX_CONTROLPARENT, WC_TABCONTROLW, L"Ribbon tabs", WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_CLIPCHILDREN | TCS_FIXEDWIDTH | TCS_TOOLTIPS,
 				0, 0, 0, 0, window, nullptr, instance, nullptr);
 			if (state.tabs == nullptr || !SetWindowSubclass(state.tabs, TabProc, 1, reinterpret_cast<DWORD_PTR>(window))) return false;
 			state.page = CreateWindowExW(WS_EX_CONTROLPARENT, L"STATIC", L"Ribbon commands", WS_CHILD | WS_CLIPCHILDREN,
